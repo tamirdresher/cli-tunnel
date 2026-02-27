@@ -47,17 +47,16 @@ ${BOLD}Options:${RESET}
   --help, -h         Show this help
 
 ${BOLD}Examples:${RESET}
-  cli-tunnel copilot --yolo
+  cli-tunnel copilot
   cli-tunnel --tunnel copilot --yolo
-  cli-tunnel --tunnel --name wizard copilot --agent squad
+  cli-tunnel --tunnel copilot --model claude-sonnet-4 --agent squad
+  cli-tunnel --tunnel --name wizard copilot --allow-all
   cli-tunnel --tunnel python -i
   cli-tunnel --tunnel htop
 
-The command runs in a PTY (pseudo-terminal). You see the exact
-output locally. With --tunnel, a devtunnel URL lets you see and
-interact with the same session from your phone via xterm.js.
-
-Sessions are ${BOLD}private${RESET} — only your MS/GitHub account can connect.
+Any flags after the command name pass through to the underlying
+app. cli-tunnel's own flags (--tunnel, --port, --name) must come
+before the command.
 `);
   process.exit(0);
 }

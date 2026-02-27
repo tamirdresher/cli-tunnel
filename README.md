@@ -30,9 +30,15 @@ npx cli-tunnel --tunnel <command> [args...]
 
 ## Usage
 
+Any flags after the command name are passed directly to the underlying app — cli-tunnel doesn't interpret them.
+
 ```bash
-# Run copilot with remote access
+# Start copilot with remote access (--yolo is a copilot flag, not ours)
 cli-tunnel --tunnel copilot --yolo
+
+# Pass any flags to the underlying command
+cli-tunnel --tunnel copilot --model claude-sonnet-4 --agent squad
+cli-tunnel --tunnel copilot --allow-all --resume
 
 # Name your session (shows in dashboard)
 cli-tunnel --tunnel --name wizard copilot --agent squad
@@ -40,14 +46,17 @@ cli-tunnel --tunnel --name wizard copilot --agent squad
 # Specific port
 cli-tunnel --tunnel --port 4000 copilot
 
-# Any CLI app works
+# Works with any CLI app — all their flags pass through
 cli-tunnel --tunnel python -i
 cli-tunnel --tunnel vim myfile.txt
 cli-tunnel --tunnel htop
+cli-tunnel --tunnel ssh user@server
 
 # Local only (no tunnel)
-cli-tunnel copilot --yolo
+cli-tunnel copilot
 ```
+
+**cli-tunnel's own flags** (`--tunnel`, `--port`, `--name`) must come **before** the command. Everything after the command name passes through unchanged.
 
 ## What You See on Your Phone
 
