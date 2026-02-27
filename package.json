@@ -1,23 +1,35 @@
 {
   "name": "cli-tunnel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Tunnel any CLI app to your phone - PTY + devtunnel + xterm.js",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "cli-tunnel": "./dist/index.js"
+    "cli-tunnel": "dist/index.js"
   },
-  "files": ["dist", "remote-ui"],
+  "files": [
+    "dist",
+    "remote-ui"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run"
   },
-  "keywords": ["cli", "tunnel", "remote", "pty", "xterm", "devtunnel", "copilot", "terminal"],
+  "keywords": [
+    "cli",
+    "tunnel",
+    "remote",
+    "pty",
+    "xterm",
+    "devtunnel",
+    "copilot",
+    "terminal"
+  ],
   "author": "Tamir Dresher",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tamirdresher/cli-tunnel.git"
+    "url": "git+https://github.com/tamirdresher/cli-tunnel.git"
   },
   "engines": {
     "node": ">=22.0.0"
