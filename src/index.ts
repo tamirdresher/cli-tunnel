@@ -111,6 +111,13 @@ function getGitInfo(): { repo: string; branch: string } {
 // ─── Security: Session token for WebSocket auth ────────────
 const sessionToken = crypto.randomUUID();
 
+// ─── F-18: Session TTL (24 hours) ──────────────────────────
+const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const sessionCreatedAt = Date.now();
+
+// ─── F-02: One-time ticket store for WebSocket auth ────────
+const tickets = new Map<string, { expires: number }>();
+
 // ─── Security: Redact secrets from replay events ────────────
 function redactSecrets(text: string): string {
   return text
@@ -136,6 +143,24 @@ const acpEventLog: string[] = [];
 const connections = new Map<string, WebSocket>();
 
 const server = http.createServer((req, res) => {
+  // F-18: Session expiry check for API routes
+  if (!hubMode && req.url?.startsWith('/api/') && Date.now() - sessionCreatedAt > SESSION_TTL) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Session expired' }));
+    return;
+  }
+
+  // F-02: Ticket endpoint — exchange session token for one-time WS ticket
+  if (req.url === '/api/auth/ticket' && req.method === 'POST') {
+    const auth = req.headers.authorization?.replace('Bearer ', '');
+    if (auth !== sessionToken) { res.writeHead(401); res.end(); return; }
+    const ticket = crypto.randomUUID();
+    tickets.set(ticket, { expires: Date.now() + 60000 });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ticket, expires: Date.now() + 60000 }));
+    return;
+  }
+
   // F-01: Session token check for all API routes (skip in hub mode)
   if (!hubMode && req.url?.startsWith('/api/')) {
     const reqUrl = new URL(req.url, `http://${req.headers.host}`);
@@ -221,7 +246,17 @@ const wss = new WebSocketServer({
   maxPayload: 1048576,
   verifyClient: (info: { req: http.IncomingMessage }) => {
     if (hubMode) return true; // Hub mode doesn't need WS auth
+    // F-18: Session expiry
+    if (Date.now() - sessionCreatedAt > SESSION_TTL) return false;
     const url = new URL(info.req.url!, `http://${info.req.headers.host}`);
+    // F-02: Accept one-time ticket
+    const ticket = url.searchParams.get('ticket');
+    if (ticket && tickets.has(ticket)) {
+      const t = tickets.get(ticket)!;
+      tickets.delete(ticket); // Single use
+      return t.expires > Date.now();
+    }
+    // Backward compat: accept token
     if (url.searchParams.get('token') !== sessionToken) return false;
     // Validate origin if present
     const origin = info.req.headers.origin;
@@ -316,6 +351,7 @@ async function main() {
     console.log(`  ${DIM}Name:${RESET}     ${displayName}`);
     console.log(`  ${DIM}Port:${RESET}     ${actualPort}`);
     console.log(`  ${DIM}Audit log:${RESET} ${auditLogPath}`);
+    console.log(`  ${DIM}Session expires:${RESET} ${new Date(sessionCreatedAt + SESSION_TTL).toLocaleTimeString()}`);
   }
 
   // Tunnel
@@ -427,11 +463,28 @@ async function main() {
     } catch { /* use as-is */ }
   }
 
-  // Security: filter sensitive environment variables
+  // F-07: Security — allowlist safe environment variables for PTY
+  const SAFE_ENV_VARS = new Set([
+    'PATH', 'HOME', 'USERPROFILE', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
+    'USER', 'LOGNAME', 'EDITOR', 'VISUAL', 'COLORTERM', 'TERM_PROGRAM',
+    'HOSTNAME', 'COMPUTERNAME', 'PWD', 'OLDPWD', 'SHLVL', 'TMPDIR', 'TMP', 'TEMP',
+    'XDG_RUNTIME_DIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
+    'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
+    'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+    'NODE_PATH', 'NODE_ENV', 'NODE_OPTIONS',
+    'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME',
+    'JAVA_HOME', 'MAVEN_HOME', 'GRADLE_HOME',
+    'PYTHONPATH', 'VIRTUAL_ENV', 'CONDA_DEFAULT_ENV',
+    'KUBECONFIG', 'DOCKER_HOST', 'DOCKER_CONFIG',
+    'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+    'SSH_AUTH_SOCK', 'GPG_TTY',
+  ]);
+
   const safeEnv: Record<string, string> = {};
-  const sensitivePatterns = /token|secret|key|password|credential|api_key|private|auth|bearer|database_url|connection_string|db_pass|cert|signing/i;
   for (const [k, v] of Object.entries(process.env)) {
-    if (!sensitivePatterns.test(k) && v !== undefined) {
+    if (SAFE_ENV_VARS.has(k) && v !== undefined) {
       safeEnv[k] = v;
     }
   }

@@ -172,6 +172,9 @@ header {
   background: var(--bg-tool);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
 }
 #key-bar {
   display: flex;
