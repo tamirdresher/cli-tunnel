@@ -351,6 +351,7 @@ async function main() {
     console.log(`  ${DIM}Name:${RESET}     ${displayName}`);
     console.log(`  ${DIM}Port:${RESET}     ${actualPort}`);
     console.log(`  ${DIM}Audit log:${RESET} ${auditLogPath}`);
+    console.log(`  ${DIM}Local URL:${RESET} http://127.0.0.1:${actualPort}?token=${sessionToken}`);
     console.log(`  ${DIM}Session expires:${RESET} ${new Date(sessionCreatedAt + SESSION_TTL).toLocaleTimeString()}`);
   }
 
