@@ -339,6 +339,8 @@
   }
 
   // ─── WebSocket ───────────────────────────────────────────
+  let reconnectAttempt = 0;
+
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}`);
@@ -346,12 +348,15 @@
 
     ws.onopen = () => {
       connected = true;
+      reconnectAttempt = 0;
       setTimeout(() => initializeACP(1), 1000);
     };
     ws.onclose = () => {
       connected = false; acpReady = false; sessionId = null;
       setStatus('offline', 'Disconnected');
-      setTimeout(connect, 3000);
+      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempt)) + Math.random() * 1000;
+      reconnectAttempt++;
+      setTimeout(connect, delay);
     };
     ws.onerror = () => setStatus('offline', 'Error');
     ws.onmessage = (e) => {
@@ -534,7 +539,7 @@
     requestAnimationFrame(() => { terminal.scrollTop = terminal.scrollHeight; });
   }
   function escapeHtml(s) {
-    const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
+    const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML.replace(/'/g, '&#39;');
   }
   function formatText(text) {
     return escapeHtml(text)

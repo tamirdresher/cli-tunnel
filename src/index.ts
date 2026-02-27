@@ -18,7 +18,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -131,10 +131,10 @@ const server = http.createServer((req, res) => {
           url: `https://${id}-${p}.${cluster}.devtunnels.ms`,
         };
       });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify({ sessions }));
     } catch {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify({ sessions: [] }));
     }
     return;
@@ -143,12 +143,17 @@ const server = http.createServer((req, res) => {
   // Delete session
   if (req.url?.startsWith('/api/sessions/') && req.method === 'DELETE') {
     const tunnelId = req.url.replace('/api/sessions/', '').replace(/\.\w+$/, '');
+    if (!/^[a-zA-Z0-9._-]+$/.test(tunnelId)) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff' });
+      res.end(JSON.stringify({ error: 'Invalid tunnel ID' }));
+      return;
+    }
     try {
-      execSync(`devtunnel delete ${tunnelId} --force`, { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      execFileSync('devtunnel', ['delete', tunnelId, '--force'], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify({ deleted: true }));
     } catch {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify({ deleted: false }));
     }
     return;
@@ -156,16 +161,24 @@ const server = http.createServer((req, res) => {
 
   // Static files
   const uiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../remote-ui');
-  let filePath = path.join(uiDir, req.url === '/' ? 'index.html' : req.url || 'index.html');
+  const decodedUrl = decodeURIComponent(req.url || '/');
+  if (decodedUrl.includes('..')) { res.writeHead(400); res.end(); return; }
+  let filePath = path.resolve(uiDir, decodedUrl === '/' ? 'index.html' : decodedUrl.replace(/^\//, ''));
   if (!filePath.startsWith(uiDir)) { res.writeHead(403); res.end(); return; }
-  if (!fs.existsSync(filePath)) filePath = path.join(uiDir, 'index.html');
+  if (!fs.existsSync(filePath)) filePath = path.resolve(uiDir, 'index.html');
   const ext = path.extname(filePath);
   const mimes: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
-  res.writeHead(200, { 'Content-Type': mimes[ext] || 'application/octet-stream' });
+  const securityHeaders: Record<string, string> = {
+    'Content-Type': mimes[ext] || 'application/octet-stream',
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws: wss:;",
+  };
+  res.writeHead(200, securityHeaders);
   fs.createReadStream(filePath).pipe(res);
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 1048576 });
 
 wss.on('connection', (ws) => {
   const id = Math.random().toString(36).substring(2);
@@ -185,7 +198,9 @@ wss.on('connection', (ws) => {
         ptyProcess.write(msg.data);
       }
       if (msg.type === 'pty_resize' && ptyProcess) {
-        ptyProcess.resize(msg.cols, msg.rows);
+        const cols = Math.max(1, Math.min(500, msg.cols));
+        const rows = Math.max(1, Math.min(200, msg.rows));
+        ptyProcess.resize(cols, rows);
       }
     } catch {
       if (ptyProcess) ptyProcess.write(raw + '\r');
