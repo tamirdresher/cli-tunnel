@@ -46,6 +46,7 @@ ${BOLD}Options:${RESET}
   --local            Disable devtunnel (localhost only)
   --port <n>         Bridge port (default: random)
   --name <name>      Session name (shown in dashboard)
+  --replay           Enable replay buffer (off by default)
   --help, -h         Show this help
 
 ${BOLD}Examples:${RESET}
@@ -66,19 +67,20 @@ pass through to the underlying app. cli-tunnel's own flags
 
 const hasLocal = args.includes('--local');
 const hasTunnel = !hasLocal;
+const hasReplay = args.includes('--replay');
 const portIdx = args.indexOf('--port');
 const port = (portIdx !== -1 && args[portIdx + 1]) ? parseInt(args[portIdx + 1]!, 10) : 0;
 const nameIdx = args.indexOf('--name');
 const sessionName = (nameIdx !== -1 && args[nameIdx + 1]) ? args[nameIdx + 1]! : '';
 
 // Everything that's not our flags is the command
-const ourFlags = new Set(['--local', '--tunnel', '--port', '--name']);
+const ourFlags = new Set(['--local', '--tunnel', '--port', '--name', '--replay']);
 const cmdArgs: string[] = [];
 let skip = false;
 for (let i = 0; i < args.length; i++) {
   if (skip) { skip = false; continue; }
   if (args[i] === '--port' || args[i] === '--name') { skip = true; continue; }
-  if (args[i] === '--local' || args[i] === '--tunnel') continue;
+  if (args[i] === '--local' || args[i] === '--tunnel' || args[i] === '--replay') continue;
   cmdArgs.push(args[i]!);
 }
 
@@ -111,10 +113,22 @@ const sessionToken = crypto.randomUUID();
 
 // ─── Security: Redact secrets from replay events ────────────
 function redactSecrets(text: string): string {
-  return text.replace(
-    /(?:token|secret|key|password|credential|authorization|api_key|private_key|access_key)[\s:="']+\S{8,}/gi,
-    '[REDACTED]'
-  );
+  return text
+    // Generic patterns: key=value, key: value, key="value"
+    .replace(/(?:token|secret|key|password|credential|authorization|api_key|private_key|access_key|connection_string|db_pass|signing)[\s:="']+\S{8,}/gi, '[REDACTED]')
+    // OpenAI keys
+    .replace(/sk-[a-zA-Z0-9]{20,}/g, '[REDACTED]')
+    // GitHub tokens
+    .replace(/gh[ps]_[a-zA-Z0-9]{36,}/g, '[REDACTED]')
+    // AWS keys
+    .replace(/AKIA[A-Z0-9]{16}/g, '[REDACTED]')
+    // Azure connection strings
+    .replace(/DefaultEndpointsProtocol=[^;\s]{20,}/gi, '[REDACTED]')
+    .replace(/AccountKey=[^;\s]{20,}/gi, 'AccountKey=[REDACTED]')
+    // Database URLs
+    .replace(/(postgres|mongodb|mysql|redis):\/\/[^\s"']{10,}/gi, '[REDACTED]')
+    // Bearer tokens in headers
+    .replace(/Bearer\s+[a-zA-Z0-9._-]{20,}/gi, 'Bearer [REDACTED]');
 }
 
 // ─── Bridge server ──────────────────────────────────────────
@@ -196,7 +210,7 @@ const server = http.createServer((req, res) => {
     'Content-Type': mimes[ext] || 'application/octet-stream',
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws: wss:;",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:* wss://*.devtunnels.ms;",
   };
   res.writeHead(200, securityHeaders);
   fs.createReadStream(filePath).pipe(res);
@@ -219,7 +233,9 @@ const wss = new WebSocketServer({
 });
 
 // ─── Security: Audit log for remote PTY input ──────────────
-const auditLogPath = path.join(os.tmpdir(), `cli-tunnel-audit-${Date.now()}.log`);
+const auditDir = path.join(os.homedir(), '.cli-tunnel', 'audit');
+fs.mkdirSync(auditDir, { recursive: true });
+const auditLogPath = path.join(auditDir, `audit-${new Date().toISOString().slice(0, 10)}.jsonl`);
 const auditLog = fs.createWriteStream(auditLogPath, { flags: 'a' });
 
 wss.on('connection', (ws, req) => {
@@ -232,18 +248,20 @@ wss.on('connection', (ws, req) => {
   const remoteAddress = req.socket.remoteAddress || 'unknown';
   connections.set(id, ws);
 
-  // Replay history with secrets redacted
-  for (const event of acpEventLog) {
-    ws.send(JSON.stringify({ type: '_replay', data: redactSecrets(event) }));
+  // Replay history with secrets redacted (only if replay is enabled)
+  if (hasReplay) {
+    for (const event of acpEventLog) {
+      ws.send(JSON.stringify({ type: '_replay', data: redactSecrets(event) }));
+    }
+    ws.send(JSON.stringify({ type: '_replay_done' }));
   }
-  ws.send(JSON.stringify({ type: '_replay_done' }));
 
   ws.on('message', (data) => {
     const raw = data.toString();
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'pty_input' && ptyProcess) {
-        auditLog.write(`${new Date().toISOString()} [${remoteAddress}] ${JSON.stringify(msg.data)}\n`);
+        auditLog.write(JSON.stringify({ ts: new Date().toISOString(), src: remoteAddress, type: 'pty_input', data: msg.data }) + '\n');
         ptyProcess.write(msg.data);
       }
       if (msg.type === 'pty_resize' && ptyProcess) {
@@ -252,7 +270,7 @@ wss.on('connection', (ws, req) => {
         ptyProcess.resize(cols, rows);
       }
     } catch {
-      auditLog.write(`${new Date().toISOString()} [${remoteAddress}] [RAW] ${JSON.stringify(raw)}\n`);
+      auditLog.write(JSON.stringify({ ts: new Date().toISOString(), src: remoteAddress, type: 'raw_input', data: raw }) + '\n');
       if (raw.length <= 100 && ptyProcess) {
         ptyProcess.write(raw + '\r');
       }
@@ -264,8 +282,10 @@ wss.on('connection', (ws, req) => {
 
 function broadcast(data: string): void {
   const msg = JSON.stringify({ type: 'pty', data });
-  acpEventLog.push(msg);
-  if (acpEventLog.length > 2000) acpEventLog.splice(0, acpEventLog.length - 2000);
+  if (hasReplay) {
+    acpEventLog.push(msg);
+    if (acpEventLog.length > 2000) acpEventLog.splice(0, acpEventLog.length - 2000);
+  }
   for (const [, ws] of connections) {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
