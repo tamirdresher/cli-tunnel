@@ -5,6 +5,27 @@
 (function () {
   'use strict';
 
+  // ─── Mobile keyboard viewport fix ────────────────────────
+  // Keep the key bar visible above the on-screen keyboard
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      const vv = window.visualViewport;
+      const inputArea = document.getElementById('input-area');
+      if (inputArea && vv) {
+        const offset = window.innerHeight - vv.height - vv.offsetTop;
+        inputArea.style.transform = offset > 0 ? `translateY(-${offset}px)` : '';
+      }
+    });
+    window.visualViewport.addEventListener('scroll', () => {
+      const vv = window.visualViewport;
+      const inputArea = document.getElementById('input-area');
+      if (inputArea && vv) {
+        const offset = window.innerHeight - vv.height - vv.offsetTop;
+        inputArea.style.transform = offset > 0 ? `translateY(-${offset}px)` : '';
+      }
+    });
+  }
+
   let ws = null;
   let connected = false;
   let sessionId = null;
@@ -98,7 +119,7 @@
       const data = await resp.json();
       renderDashboard(data.sessions || []);
     } catch (err) {
-      dashboard.innerHTML = '<div style="padding:12px;color:var(--red)">Failed to load sessions: ' + err.message + '</div>';
+      dashboard.innerHTML = '<div style="padding:12px;color:var(--red)">' + escapeHtml('Failed to load sessions: ' + err.message) + '</div>';
     }
   }
 
@@ -346,9 +367,16 @@
 
   function connect() {
     if (isHubMode) {
-      // Hub mode — no WS needed, just show sessions
+      // Hub mode — hide terminal UI, show sessions only
       setStatus('online', 'Hub');
-      toggleView(); // Switch to sessions view
+      terminal.classList.add('hidden');
+      termContainer.classList.add('hidden');
+      $('#input-area').classList.add('hidden');
+      $('#btn-sessions').classList.add('hidden');
+      dashboard.classList.remove('hidden');
+      loadSessions();
+      // Auto-refresh every 10s
+      setInterval(loadSessions, 10000);
       return;
     }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -493,10 +521,12 @@
       <h3>${icon} ${escapeHtml(title)}</h3>
       <p>${escapeHtml(shortCmd || JSON.stringify(p).substring(0, 200))}</p>
       <div class="perm-actions">
-        <button class="btn-deny" onclick="handlePerm(${msg.id}, false)">Deny</button>
-        <button class="btn-approve" onclick="handlePerm(${msg.id}, true)">Approve</button>
+        <button class="btn-deny">Deny</button>
+        <button class="btn-approve">Approve</button>
       </div>
     </div>`;
+    permOverlay.querySelector('.btn-deny').addEventListener('click', () => window.handlePerm(msg.id, false));
+    permOverlay.querySelector('.btn-approve').addEventListener('click', () => window.handlePerm(msg.id, true));
   }
   window.handlePerm = (id, approved) => {
     if (ws?.readyState === WebSocket.OPEN) {

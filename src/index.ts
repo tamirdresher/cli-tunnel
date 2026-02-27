@@ -111,7 +111,10 @@ const sessionToken = crypto.randomUUID();
 
 // ─── Security: Redact secrets from replay events ────────────
 function redactSecrets(text: string): string {
-  return text.replace(/(?:token|secret|key|password|credential|authorization)[\s:="']+[^\s"']{8,}/gi, '$& [REDACTED]');
+  return text.replace(
+    /(?:token|secret|key|password|credential|authorization|api_key|private_key|access_key)[\s:="']+\S{8,}/gi,
+    '[REDACTED]'
+  );
 }
 
 // ─── Bridge server ──────────────────────────────────────────
@@ -119,10 +122,21 @@ const acpEventLog: string[] = [];
 const connections = new Map<string, WebSocket>();
 
 const server = http.createServer((req, res) => {
+  // F-01: Session token check for all API routes (skip in hub mode)
+  if (!hubMode && req.url?.startsWith('/api/')) {
+    const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+    const authToken = req.headers.authorization?.replace('Bearer ', '') || reqUrl.searchParams.get('token');
+    if (authToken !== sessionToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+  }
+
   // Sessions API
   if (req.url === '/api/sessions' && req.method === 'GET') {
     try {
-      const output = execSync('devtunnel list --labels cli-tunnel --json', { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = execFileSync('devtunnel', ['list', '--labels', 'cli-tunnel', '--json'], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
       const data = JSON.parse(output);
       const sessions = (data.tunnels || []).map((t: any) => {
         const labels = t.labels || [];
@@ -194,7 +208,13 @@ const wss = new WebSocketServer({
   verifyClient: (info: { req: http.IncomingMessage }) => {
     if (hubMode) return true; // Hub mode doesn't need WS auth
     const url = new URL(info.req.url!, `http://${info.req.headers.host}`);
-    return url.searchParams.get('token') === sessionToken;
+    if (url.searchParams.get('token') !== sessionToken) return false;
+    // Validate origin if present
+    const origin = info.req.headers.origin;
+    if (origin && !origin.includes('devtunnels.ms') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+      return false;
+    }
+    return true;
   },
 });
 
@@ -203,7 +223,12 @@ const auditLogPath = path.join(os.tmpdir(), `cli-tunnel-audit-${Date.now()}.log`
 const auditLog = fs.createWriteStream(auditLogPath, { flags: 'a' });
 
 wss.on('connection', (ws, req) => {
-  const id = Math.random().toString(36).substring(2);
+  // F-10: Connection cap
+  if (connections.size >= 5) {
+    ws.close(1013, 'Max connections reached');
+    return;
+  }
+  const id = crypto.randomUUID();
   const remoteAddress = req.socket.remoteAddress || 'unknown';
   connections.set(id, ws);
 
@@ -227,7 +252,10 @@ wss.on('connection', (ws, req) => {
         ptyProcess.resize(cols, rows);
       }
     } catch {
-      if (ptyProcess) ptyProcess.write(raw + '\r');
+      auditLog.write(`${new Date().toISOString()} [${remoteAddress}] [RAW] ${JSON.stringify(raw)}\n`);
+      if (raw.length <= 100 && ptyProcess) {
+        ptyProcess.write(raw + '\r');
+      }
     }
   });
 
@@ -248,7 +276,7 @@ let ptyProcess: any = null;
 
 async function main() {
   const actualPort = await new Promise<number>((resolve, reject) => {
-    server.listen(port, () => {
+    server.listen(port, '127.0.0.1', () => {
       const addr = server.address();
       resolve(typeof addr === 'object' ? addr!.port : port);
     });
@@ -275,7 +303,7 @@ async function main() {
     // Check if devtunnel is installed
     let devtunnelInstalled = false;
     try {
-      execSync('devtunnel --version', { stdio: 'pipe' });
+      execFileSync('devtunnel', ['--version'], { stdio: 'pipe' });
       devtunnelInstalled = true;
     } catch {
       console.log(`\n  ${YELLOW}⚠ devtunnel CLI not found!${RESET}\n`);
@@ -296,7 +324,7 @@ async function main() {
     // Check if logged in
     if (devtunnelInstalled) {
       try {
-        const userInfo = execSync('devtunnel user show', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const userInfo = execFileSync('devtunnel', ['user', 'show'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
         if (userInfo.includes('not logged in') || userInfo.includes('No user')) {
           throw new Error('not logged in');
         }
@@ -311,12 +339,12 @@ async function main() {
 
     if (devtunnelInstalled) {
       try {
-      const labels = ['cli-tunnel', sanitizeLabel(sessionName || command), sanitizeLabel(repo), sanitizeLabel(branch), sanitizeLabel(machine), `port-${actualPort}`]
-        .map(l => `--labels ${l}`).join(' ');
-      const createOut = execSync(`devtunnel create ${labels} --expiration 1d --json`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const labelValues = ['cli-tunnel', sanitizeLabel(sessionName || command), sanitizeLabel(repo), sanitizeLabel(branch), sanitizeLabel(machine), `port-${actualPort}`];
+      const labelArgs = labelValues.flatMap(l => ['--labels', l]);
+      const createOut = execFileSync('devtunnel', ['create', ...labelArgs, '--expiration', '1d', '--json'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
       const tunnelId = JSON.parse(createOut).tunnel?.tunnelId?.split('.')[0];
       const cluster = JSON.parse(createOut).tunnel?.tunnelId?.split('.')[1] || 'euw';
-      execSync(`devtunnel port create ${tunnelId} -p ${actualPort} --protocol http`, { stdio: 'pipe' });
+      execFileSync('devtunnel', ['port', 'create', tunnelId, '-p', String(actualPort), '--protocol', 'http'], { stdio: 'pipe' });
       const hostProc = spawn('devtunnel', ['host', tunnelId], { stdio: 'pipe', detached: false });
 
       const url = await new Promise<string>((resolve, reject) => {
@@ -338,8 +366,8 @@ async function main() {
         qr.default.generate(tunnelUrlWithToken, { small: true }, (code: string) => console.log(code));
       } catch {}
 
-      process.on('SIGINT', () => { hostProc.kill(); try { execSync(`devtunnel delete ${tunnelId} --force`, { stdio: 'pipe' }); } catch {} });
-      process.on('exit', () => { hostProc.kill(); try { execSync(`devtunnel delete ${tunnelId} --force`, { stdio: 'pipe' }); } catch {} });
+      process.on('SIGINT', () => { hostProc.kill(); try { execFileSync('devtunnel', ['delete', tunnelId, '--force'], { stdio: 'pipe' }); } catch {} });
+      process.on('exit', () => { hostProc.kill(); try { execFileSync('devtunnel', ['delete', tunnelId, '--force'], { stdio: 'pipe' }); } catch {} });
     } catch (err) {
       console.log(`  ${YELLOW}⚠${RESET} Tunnel failed: ${(err as Error).message}\n`);
     }
@@ -366,7 +394,7 @@ async function main() {
   let resolvedCmd = command;
   if (process.platform === 'win32') {
     try {
-      const wherePaths = execSync(`where ${command}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().split('\n');
+      const wherePaths = execFileSync('where', [command], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().split('\n');
       // Prefer .exe or .cmd over .ps1 for node-pty compatibility
       const exePath = wherePaths.find(p => p.trim().endsWith('.exe')) || wherePaths.find(p => p.trim().endsWith('.cmd'));
       if (exePath) {
@@ -381,7 +409,7 @@ async function main() {
 
   // Security: filter sensitive environment variables
   const safeEnv: Record<string, string> = {};
-  const sensitivePatterns = /token|secret|key|password|credential|api_key|private/i;
+  const sensitivePatterns = /token|secret|key|password|credential|api_key|private|auth|bearer|database_url|connection_string|db_pass|cert|signing/i;
   for (const [k, v] of Object.entries(process.env)) {
     if (!sensitivePatterns.test(k) && v !== undefined) {
       safeEnv[k] = v;
