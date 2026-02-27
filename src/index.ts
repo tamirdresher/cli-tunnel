@@ -18,6 +18,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { execSync, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -104,6 +105,14 @@ function getGitInfo(): { repo: string; branch: string } {
   }
 }
 
+// ─── Security: Session token for WebSocket auth ────────────
+const sessionToken = crypto.randomUUID();
+
+// ─── Security: Redact secrets from replay events ────────────
+function redactSecrets(text: string): string {
+  return text.replace(/(?:token|secret|key|password|credential|authorization)[\s:="']+[^\s"']{8,}/gi, '$& [REDACTED]');
+}
+
 // ─── Bridge server ──────────────────────────────────────────
 const acpEventLog: string[] = [];
 const connections = new Map<string, WebSocket>();
@@ -178,15 +187,27 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 1048576 });
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 1048576,
+  verifyClient: (info: { req: http.IncomingMessage }) => {
+    const url = new URL(info.req.url!, `http://${info.req.headers.host}`);
+    return url.searchParams.get('token') === sessionToken;
+  },
+});
 
-wss.on('connection', (ws) => {
+// ─── Security: Audit log for remote PTY input ──────────────
+const auditLogPath = path.join(os.tmpdir(), `cli-tunnel-audit-${Date.now()}.log`);
+const auditLog = fs.createWriteStream(auditLogPath, { flags: 'a' });
+
+wss.on('connection', (ws, req) => {
   const id = Math.random().toString(36).substring(2);
+  const remoteAddress = req.socket.remoteAddress || 'unknown';
   connections.set(id, ws);
 
-  // Replay history
+  // Replay history with secrets redacted
   for (const event of acpEventLog) {
-    ws.send(JSON.stringify({ type: '_replay', data: event }));
+    ws.send(JSON.stringify({ type: '_replay', data: redactSecrets(event) }));
   }
   ws.send(JSON.stringify({ type: '_replay_done' }));
 
@@ -195,6 +216,7 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'pty_input' && ptyProcess) {
+        auditLog.write(`${new Date().toISOString()} [${remoteAddress}] ${JSON.stringify(msg.data)}\n`);
         ptyProcess.write(msg.data);
       }
       if (msg.type === 'pty_resize' && ptyProcess) {
@@ -239,6 +261,7 @@ async function main() {
   console.log(`  ${DIM}Command:${RESET}  ${command} ${commandArgs.join(' ')}`);
   console.log(`  ${DIM}Name:${RESET}     ${displayName}`);
   console.log(`  ${DIM}Port:${RESET}     ${actualPort}`);
+  console.log(`  ${DIM}Audit log:${RESET} ${auditLogPath}`);
 
   // Tunnel
   if (hasTunnel) {
@@ -300,11 +323,12 @@ async function main() {
         hostProc.on('error', (e) => { clearTimeout(timeout); reject(e); });
       });
 
-      console.log(`  ${GREEN}✓${RESET} Tunnel: ${BOLD}${url}${RESET}\n`);
+      const tunnelUrlWithToken = `${url}?token=${sessionToken}`;
+      console.log(`  ${GREEN}✓${RESET} Tunnel: ${BOLD}${tunnelUrlWithToken}${RESET}\n`);
       try {
         // @ts-ignore
         const qr = (await import('qrcode-terminal')) as any;
-        qr.default.generate(url, { small: true }, (code: string) => console.log(code));
+        qr.default.generate(tunnelUrlWithToken, { small: true }, (code: string) => console.log(code));
       } catch {}
 
       process.on('SIGINT', () => { hostProc.kill(); try { execSync(`devtunnel delete ${tunnelId} --force`, { stdio: 'pipe' }); } catch {} });
@@ -339,10 +363,19 @@ async function main() {
     } catch { /* use as-is */ }
   }
 
+  // Security: filter sensitive environment variables
+  const safeEnv: Record<string, string> = {};
+  const sensitivePatterns = /token|secret|key|password|credential|api_key|private/i;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!sensitivePatterns.test(k) && v !== undefined) {
+      safeEnv[k] = v;
+    }
+  }
+
   ptyProcess = nodePty.spawn(resolvedCmd, commandArgs, {
     name: 'xterm-256color',
     cols, rows, cwd,
-    env: process.env as Record<string, string>,
+    env: safeEnv,
   });
 
   ptyProcess.onData((data: string) => {

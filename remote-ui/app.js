@@ -343,7 +343,9 @@
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}`);
+    const tokenParam = new URLSearchParams(window.location.search).get('token');
+    const wsUrl = tokenParam ? `${proto}//${location.host}?token=${encodeURIComponent(tokenParam)}` : `${proto}//${location.host}`;
+    ws = new WebSocket(wsUrl);
     setStatus('connecting', 'Connecting...');
 
     ws.onopen = () => {
