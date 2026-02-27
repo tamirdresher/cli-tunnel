@@ -72,13 +72,13 @@ const nameIdx = args.indexOf('--name');
 const sessionName = (nameIdx !== -1 && args[nameIdx + 1]) ? args[nameIdx + 1]! : '';
 
 // Everything that's not our flags is the command
-const ourFlags = new Set(['--local', '--port', '--name']);
+const ourFlags = new Set(['--local', '--tunnel', '--port', '--name']);
 const cmdArgs: string[] = [];
 let skip = false;
 for (let i = 0; i < args.length; i++) {
   if (skip) { skip = false; continue; }
-  if (ourFlags.has(args[i]!) && args[i] !== '--local') { skip = true; continue; }
-  if (args[i] === '--local') continue;
+  if (args[i] === '--port' || args[i] === '--name') { skip = true; continue; }
+  if (args[i] === '--local' || args[i] === '--tunnel') continue;
   cmdArgs.push(args[i]!);
 }
 
