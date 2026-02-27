@@ -338,10 +338,19 @@
     }
   }
 
+  // ─── Detect hub mode (no token in URL) ────────────────────
+  const isHubMode = !new URLSearchParams(window.location.search).get('token');
+
   // ─── WebSocket ───────────────────────────────────────────
   let reconnectAttempt = 0;
 
   function connect() {
+    if (isHubMode) {
+      // Hub mode — no WS needed, just show sessions
+      setStatus('online', 'Hub');
+      toggleView(); // Switch to sessions view
+      return;
+    }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const tokenParam = new URLSearchParams(window.location.search).get('token');
     const wsUrl = tokenParam ? `${proto}//${location.host}?token=${encodeURIComponent(tokenParam)}` : `${proto}//${location.host}`;

@@ -34,58 +34,59 @@ const YELLOW = '\x1b[33m';
 // ─── Parse args ─────────────────────────────────────────────
 const args = process.argv.slice(2);
 
-if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+if (args.includes('--help') || args.includes('-h')) {
   console.log(`
 ${BOLD}cli-tunnel${RESET} — Tunnel any CLI app to your phone
 
 ${BOLD}Usage:${RESET}
   cli-tunnel [options] <command> [args...]
+  cli-tunnel                              # hub mode — sessions dashboard only
 
 ${BOLD}Options:${RESET}
-  --tunnel           Enable remote access via devtunnel
+  --local            Disable devtunnel (localhost only)
   --port <n>         Bridge port (default: random)
   --name <name>      Session name (shown in dashboard)
   --help, -h         Show this help
 
 ${BOLD}Examples:${RESET}
-  cli-tunnel copilot
-  cli-tunnel --tunnel copilot --yolo
-  cli-tunnel --tunnel copilot --model claude-sonnet-4 --agent squad
-  cli-tunnel --tunnel --name wizard copilot --allow-all
-  cli-tunnel --tunnel python -i
-  cli-tunnel --tunnel htop
+  cli-tunnel copilot --yolo               # tunnel + run copilot
+  cli-tunnel copilot --model claude-sonnet-4 --agent squad
+  cli-tunnel k9s                          # tunnel + run k9s
+  cli-tunnel python -i                    # tunnel + run python
+  cli-tunnel --name wizard copilot        # named session
+  cli-tunnel --local copilot --yolo       # localhost only, no devtunnel
+  cli-tunnel                              # hub: see all active sessions
 
-Any flags after the command name pass through to the underlying
-app. cli-tunnel's own flags (--tunnel, --port, --name) must come
-before the command.
+Devtunnel is enabled by default. All flags after the command name
+pass through to the underlying app. cli-tunnel's own flags
+(--local, --port, --name) must come before the command.
 `);
   process.exit(0);
 }
 
-const hasTunnel = args.includes('--tunnel');
+const hasLocal = args.includes('--local');
+const hasTunnel = !hasLocal;
 const portIdx = args.indexOf('--port');
 const port = (portIdx !== -1 && args[portIdx + 1]) ? parseInt(args[portIdx + 1]!, 10) : 0;
 const nameIdx = args.indexOf('--name');
 const sessionName = (nameIdx !== -1 && args[nameIdx + 1]) ? args[nameIdx + 1]! : '';
 
 // Everything that's not our flags is the command
-const ourFlags = new Set(['--tunnel', '--port', '--name']);
+const ourFlags = new Set(['--local', '--port', '--name']);
 const cmdArgs: string[] = [];
 let skip = false;
 for (let i = 0; i < args.length; i++) {
   if (skip) { skip = false; continue; }
-  if (ourFlags.has(args[i]!) && args[i] !== '--tunnel') { skip = true; continue; }
-  if (args[i] === '--tunnel') continue;
+  if (ourFlags.has(args[i]!) && args[i] !== '--local') { skip = true; continue; }
+  if (args[i] === '--local') continue;
   cmdArgs.push(args[i]!);
 }
 
-if (cmdArgs.length === 0) {
-  console.error('Error: no command specified. Run cli-tunnel --help for usage.');
-  process.exit(1);
-}
+// Hub mode — no command, just show sessions dashboard
+const hubMode = cmdArgs.length === 0;
 
-const command = cmdArgs[0]!;
-const commandArgs = cmdArgs.slice(1);
+const command = hubMode ? '' : cmdArgs[0]!;
+const commandArgs = hubMode ? [] : cmdArgs.slice(1);
 const cwd = process.cwd();
 
 // ─── Tunnel helpers ─────────────────────────────────────────
@@ -181,7 +182,7 @@ const server = http.createServer((req, res) => {
     'Content-Type': mimes[ext] || 'application/octet-stream',
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws: wss:;",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws: wss:;",
   };
   res.writeHead(200, securityHeaders);
   fs.createReadStream(filePath).pipe(res);
@@ -191,6 +192,7 @@ const wss = new WebSocketServer({
   server,
   maxPayload: 1048576,
   verifyClient: (info: { req: http.IncomingMessage }) => {
+    if (hubMode) return true; // Hub mode doesn't need WS auth
     const url = new URL(info.req.url!, `http://${info.req.headers.host}`);
     return url.searchParams.get('token') === sessionToken;
   },
@@ -257,11 +259,16 @@ async function main() {
   const machine = os.hostname();
   const displayName = sessionName || command;
 
-  console.log(`\n${BOLD}cli-tunnel${RESET} ${DIM}v1.0.0${RESET}\n`);
-  console.log(`  ${DIM}Command:${RESET}  ${command} ${commandArgs.join(' ')}`);
-  console.log(`  ${DIM}Name:${RESET}     ${displayName}`);
-  console.log(`  ${DIM}Port:${RESET}     ${actualPort}`);
-  console.log(`  ${DIM}Audit log:${RESET} ${auditLogPath}`);
+  console.log(`\n${BOLD}cli-tunnel${RESET} ${DIM}v1.1.0${RESET}\n`);
+  if (hubMode) {
+    console.log(`  ${BOLD}📋 Hub Mode${RESET} — sessions dashboard`);
+    console.log(`  ${DIM}Port:${RESET}     ${actualPort}\n`);
+  } else {
+    console.log(`  ${DIM}Command:${RESET}  ${command} ${commandArgs.join(' ')}`);
+    console.log(`  ${DIM}Name:${RESET}     ${displayName}`);
+    console.log(`  ${DIM}Port:${RESET}     ${actualPort}`);
+    console.log(`  ${DIM}Audit log:${RESET} ${auditLogPath}`);
+  }
 
   // Tunnel
   if (hasTunnel) {
@@ -337,6 +344,15 @@ async function main() {
       console.log(`  ${YELLOW}⚠${RESET} Tunnel failed: ${(err as Error).message}\n`);
     }
     } // end if (devtunnelInstalled)
+  }
+
+  if (hubMode) {
+    // Hub mode — just serve the sessions dashboard, no PTY
+    console.log(`  ${GREEN}✓${RESET} Hub running — open in browser to see all sessions\n`);
+    console.log(`  ${DIM}Press Ctrl+C to stop.${RESET}\n`);
+    process.on('SIGINT', () => { server.close(); process.exit(0); });
+    // Keep process alive
+    await new Promise(() => {});
   }
 
   console.log(`  ${DIM}Starting ${command}...${RESET}\n`);
