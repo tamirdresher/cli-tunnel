@@ -227,8 +227,45 @@ async function main() {
 
   // Tunnel
   if (hasTunnel) {
+    // Check if devtunnel is installed
+    let devtunnelInstalled = false;
     try {
       execSync('devtunnel --version', { stdio: 'pipe' });
+      devtunnelInstalled = true;
+    } catch {
+      console.log(`\n  ${YELLOW}⚠ devtunnel CLI not found!${RESET}\n`);
+      console.log(`  ${BOLD}To enable remote access, install Microsoft Dev Tunnels:${RESET}\n`);
+      if (process.platform === 'win32') {
+        console.log(`    ${GREEN}winget install Microsoft.devtunnel${RESET}`);
+      } else if (process.platform === 'darwin') {
+        console.log(`    ${GREEN}brew install --cask devtunnel${RESET}`);
+      } else {
+        console.log(`    ${GREEN}curl -sL https://aka.ms/DevTunnelCliInstall | bash${RESET}`);
+      }
+      console.log(`\n  Then authenticate once:\n`);
+      console.log(`    ${GREEN}devtunnel user login${RESET}\n`);
+      console.log(`  ${DIM}More info: https://aka.ms/devtunnels/doc${RESET}\n`);
+      console.log(`  ${DIM}Continuing without tunnel (local only)...${RESET}\n`);
+    }
+
+    // Check if logged in
+    if (devtunnelInstalled) {
+      try {
+        const userInfo = execSync('devtunnel user show', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        if (userInfo.includes('not logged in') || userInfo.includes('No user')) {
+          throw new Error('not logged in');
+        }
+      } catch {
+        console.log(`\n  ${YELLOW}⚠ devtunnel not authenticated!${RESET}\n`);
+        console.log(`  Run this once to log in:\n`);
+        console.log(`    ${GREEN}devtunnel user login${RESET}\n`);
+        console.log(`  ${DIM}Continuing without tunnel (local only)...${RESET}\n`);
+        devtunnelInstalled = false;
+      }
+    }
+
+    if (devtunnelInstalled) {
+      try {
       const labels = ['cli-tunnel', sanitizeLabel(sessionName || command), sanitizeLabel(repo), sanitizeLabel(branch), sanitizeLabel(machine), `port-${actualPort}`]
         .map(l => `--labels ${l}`).join(' ');
       const createOut = execSync(`devtunnel create ${labels} --expiration 1d --json`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -260,6 +297,7 @@ async function main() {
     } catch (err) {
       console.log(`  ${YELLOW}⚠${RESET} Tunnel failed: ${(err as Error).message}\n`);
     }
+    } // end if (devtunnelInstalled)
   }
 
   console.log(`  ${DIM}Starting ${command}...${RESET}\n`);

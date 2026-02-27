@@ -1,6 +1,6 @@
 {
   "name": "cli-tunnel",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Tunnel any CLI app to your phone - PTY + devtunnel + xterm.js",
   "type": "module",
   "main": "dist/index.js",
