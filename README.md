@@ -3,10 +3,12 @@
 Tunnel any CLI app to your phone — see the exact terminal output in your browser and type back into it.
 
 ```bash
-npx cli-tunnel --tunnel copilot --yolo
-npx cli-tunnel --tunnel python -i
-npx cli-tunnel --tunnel htop
+npx cli-tunnel copilot --yolo
+npx cli-tunnel python -i
+npx cli-tunnel k9s
 ```
+
+![Mobile terminal](docs/images/mobile-terminal.png)
 
 ## How It Works
 
@@ -22,53 +24,104 @@ npx cli-tunnel --tunnel htop
 npm install -g cli-tunnel
 ```
 
-Or use directly with npx:
+Or use directly with npx (no install needed):
 
 ```bash
-npx cli-tunnel --tunnel <command> [args...]
+npx cli-tunnel <command> [args...]
+```
+
+If devtunnel isn't installed, cli-tunnel will offer to install it for you automatically.
+
+## Quick Start
+
+```bash
+# Run copilot and access it from your phone
+cli-tunnel copilot --yolo
+
+# A QR code appears — scan it with your phone
+# Press any key to start the CLI tool
+# Your phone now shows the exact same terminal!
 ```
 
 ## Usage
 
-Any flags after the command name are passed directly to the underlying app — cli-tunnel doesn't interpret them.
+Devtunnel is enabled by default. All flags after the command name pass through to the underlying app — cli-tunnel doesn't interpret them.
 
 ```bash
-# Start copilot with remote access (--yolo is a copilot flag, not ours)
-cli-tunnel --tunnel copilot --yolo
+# Run copilot with any flags
+cli-tunnel copilot --yolo
+cli-tunnel copilot --model claude-sonnet-4 --agent squad
 
-# Pass any flags to the underlying command
-cli-tunnel --tunnel copilot --model claude-sonnet-4 --agent squad
-cli-tunnel --tunnel copilot --allow-all --resume
+# Name your session (shows in the hub dashboard)
+cli-tunnel --name wizard copilot --agent squad
 
-# Name your session (shows in dashboard)
-cli-tunnel --tunnel --name wizard copilot --agent squad
+# Works with any CLI app
+cli-tunnel python -i
+cli-tunnel vim myfile.txt
+cli-tunnel htop
+cli-tunnel k9s
+cli-tunnel ssh user@server
 
 # Specific port
-cli-tunnel --tunnel --port 4000 copilot
+cli-tunnel --port 4000 copilot
 
-# Works with any CLI app — all their flags pass through
-cli-tunnel --tunnel python -i
-cli-tunnel --tunnel vim myfile.txt
-cli-tunnel --tunnel htop
-cli-tunnel --tunnel ssh user@server
-
-# Local only (no tunnel)
-cli-tunnel copilot
+# Local only (no tunnel, localhost access only)
+cli-tunnel --local copilot --yolo
 ```
 
-**cli-tunnel's own flags** (`--tunnel`, `--port`, `--name`) must come **before** the command. Everything after the command name passes through unchanged.
+**cli-tunnel's own flags** (`--local`, `--port`, `--name`, `--replay`) must come **before** the command.
+
+## Hub Mode — Sessions Dashboard
+
+Run `cli-tunnel` with no command to start **hub mode** — a dashboard that shows all your active sessions across machines.
+
+```bash
+cli-tunnel
+```
+
+![Hub dashboard](docs/images/hub-dashboard.png)
+
+The hub discovers sessions via devtunnel labels. Sessions on the same machine are directly connectable — tap a session card to open it. Remote sessions (other machines) are visible but shown with a 🔒 icon.
+
+## Grid View — Monitor All Sessions
+
+When the hub has 2+ connectable sessions, a **⊞ Grid** button appears. Click it to see all sessions as live terminals — like tmux in your browser.
+
+Four layout modes, switchable without reconnecting:
+
+### ⊞ Tiles — Overview
+Scaled-down terminal previews in a card grid, like Windows Task View. Click any tile to go fullscreen.
+
+![Tiles view](docs/images/grid-tiles.png)
+
+### ⊟ Tmux — Split Panels
+Equal split panels with layout presets: **Equal**, **Main+Side**, and **Stacked**.
+
+![Tmux view](docs/images/grid-tmux.png)
+
+### ◉ Focus — Presentation Mode
+One terminal takes the full screen. Other sessions shown as clickable strips at the bottom — tap to swap.
+
+![Focus view](docs/images/grid-focus.png)
+
+### ⊡ Fullscreen
+Single terminal with key bar for mobile input. "← Grid" button to go back.
+
+![Fullscreen view](docs/images/grid-fullscreen.png)
+
+All modes share the same WebSocket connections — switching is instant, no reconnection needed.
 
 ## What You See on Your Phone
 
 - **Full terminal** rendered by xterm.js — exact same output as your local terminal
 - **Key bar** with ↑ ↓ → ← Tab Enter Esc Ctrl+C for mobile navigation
-- **Sessions dashboard** — see all running sessions, tap to connect
-- **Session cleanup** — remove stale tunnels
+- **Sessions button** — switch between terminal and sessions dashboard
+- **QR code** — scan from your phone to connect instantly
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) 22+
-- [Microsoft Dev Tunnels CLI](https://aka.ms/devtunnels/doc) (for `--tunnel` mode)
+- [Node.js](https://nodejs.org/) 22+ (Node 20 works too; Node 23 may need the latest beta)
+- [Microsoft Dev Tunnels CLI](https://aka.ms/devtunnels/doc) — cli-tunnel offers to install it if missing
   ```bash
   winget install Microsoft.devtunnel   # Windows
   brew install --cask devtunnel        # macOS
@@ -81,23 +134,25 @@ cli-tunnel uses a layered security model:
 
 **Network layer** — Microsoft Dev Tunnels are private by default. Only the Microsoft or GitHub account that created the tunnel can connect. TLS encryption is handled by Microsoft's relay infrastructure. No inbound ports are opened on your machine.
 
-**Session authentication** — Each session generates a unique token (cryptographic random UUID). All HTTP API and WebSocket connections require this token. The token is embedded in the URL you receive at startup — anyone without it cannot connect.
+**Session authentication** — Each session generates a unique token (cryptographic random UUID). All HTTP API and WebSocket connections require this token. The token is embedded in the URL you receive at startup.
 
-**WebSocket auth** — cli-tunnel uses a ticket-based handshake: the browser exchanges the session token for a single-use, short-lived ticket (60 seconds) to establish the WebSocket connection. This avoids keeping the long-lived token in WebSocket upgrade logs.
+**Ticket-based WebSocket auth** — The browser exchanges the session token for a single-use, short-lived ticket (60 seconds) to establish the WebSocket connection. This avoids keeping the long-lived token in WebSocket upgrade logs.
 
-**Input validation** — Only structured JSON messages are accepted over WebSocket. Raw text is rejected and logged. Terminal resize commands are bounds-checked to prevent abuse.
+**Rate limiting** — Per-IP rate limits on all endpoints (30 requests/minute for HTTP, 10/minute for ticket minting). Returns 429 Too Many Requests when exceeded.
 
-**Environment isolation** — The child process receives a filtered set of environment variables (an allowlist of ~40 safe variables like PATH, HOME, TERM). Sensitive variables and NODE_OPTIONS are excluded to prevent code injection.
+**Input validation** — Only structured JSON messages are accepted over WebSocket. Raw text is rejected and logged. Terminal resize commands are bounds-checked (1–500 cols, 1–200 rows).
 
-**Audit logging** — All remote keyboard input is logged to `~/.cli-tunnel/audit/` in JSONL format with timestamps and source addresses. Secrets are automatically redacted from audit entries.
+**Environment isolation** — The child process receives filtered environment variables. Dangerous variables (NODE_OPTIONS, BASH_ENV, LD_PRELOAD, etc.) and secrets (tokens, keys, passwords) are stripped.
 
-**Connection limits** — Maximum 5 concurrent WebSocket connections. Sessions expire after 24 hours.
+**Audit logging** — All remote keyboard input is logged to `~/.cli-tunnel/audit/` in JSONL format with timestamps and source addresses. Secrets are automatically redacted (OpenAI, GitHub, AWS, JWT, Slack, npm, PEM, Bearer tokens).
+
+**Connection limits** — Maximum 5 concurrent WebSocket connections (2 per IP). Ping/pong heartbeat every 30 seconds cleans stale connections. Sessions expire after 4 hours.
+
+**Security headers** — CSP (no unsafe-inline for scripts), HSTS, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy: no-referrer, Cache-Control: no-store.
 
 ## Terminal Size Behavior
 
-cli-tunnel uses a single PTY (pseudo-terminal) shared between your local terminal and all remote viewers. When a phone or tablet connects, the PTY resizes to match the remote device's screen dimensions. This ensures the CLI app renders correctly on the device you're actively using to interact with it.
-
-Because the PTY can only have one size at a time, the local terminal on your machine will reflect the remote device's dimensions while it's connected. This is by design — cli-tunnel prioritizes the remote viewing experience since the primary use case is controlling your CLI from another device.
+cli-tunnel uses a single PTY shared between your local terminal and all remote viewers. When a phone connects, the PTY resizes to match the remote device's screen dimensions — the CLI app renders correctly on the device you're actively using.
 
 **Tips for the best experience:**
 - Rotate your phone to landscape for a wider terminal
@@ -107,7 +162,7 @@ Because the PTY can only have one size at a time, the local terminal on your mac
 ## FAQ
 
 **Can multiple devices connect to the same session?**
-Yes, up to 5 devices simultaneously. All viewers see the same terminal output in real time. Input from any device goes to the same CLI session.
+Yes, up to 5 devices simultaneously (2 per IP). All viewers see the same terminal output in real time. Input from any device goes to the same CLI session.
 
 **What happens if my phone disconnects?**
 The CLI session keeps running on your machine. When you reconnect, you'll see live output from that point forward. Use `--replay` to enable history replay so reconnecting devices catch up on what they missed.
@@ -119,18 +174,21 @@ Yes. Any command that runs in a terminal works — copilot, vim, htop, python, s
 No. cli-tunnel runs entirely on your machine. Microsoft Dev Tunnels provides the relay infrastructure, but no third-party server sees your terminal content.
 
 **What about the anti-phishing page?**
-The first time you open a devtunnel URL, Microsoft shows an interstitial warning page. This is a devtunnel security feature — it confirms you trust the tunnel. You only see it once per tunnel.
+The first time you open a devtunnel URL, Microsoft shows an interstitial warning page. This is a devtunnel security feature. You only see it once per tunnel.
 
 **Does the tool work without devtunnel?**
-Yes. Use `--local` to skip tunnel creation. The terminal is available at `http://127.0.0.1:<port>` on your local network only.
+Yes. Use `--local` to skip tunnel creation. The terminal is available at `http://127.0.0.1:<port>` on localhost only.
 
 **What's hub mode?**
-Run `cli-tunnel` with no command to start hub mode — a sessions dashboard that shows all active cli-tunnel sessions on your machine. Tap any online session to connect to it.
+Run `cli-tunnel` with no command to start hub mode — a sessions dashboard that shows all active cli-tunnel sessions. Tap any session to connect, or use Grid view to monitor all sessions simultaneously.
+
+**How does the Grid view connect to sessions?**
+The hub reads session tokens from `~/.cli-tunnel/sessions/` (files with owner-only permissions). It proxies ticket requests to each session's local port — no tokens are exposed to the browser client.
 
 ## How It's Built
 
 - **[node-pty](https://github.com/microsoft/node-pty)** — spawns the command in a pseudo-terminal
-- **[xterm.js](https://xtermjs.org/)** — terminal emulator in the browser (loaded from CDN)
+- **[xterm.js](https://xtermjs.org/)** — terminal emulator in the browser (loaded from CDN with SRI hashes)
 - **[ws](https://github.com/websockets/ws)** — WebSocket server for real-time streaming
 - **[Dev Tunnels](https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/)** — authenticated HTTPS relay
 
