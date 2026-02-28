@@ -118,6 +118,14 @@ const sessionCreatedAt = Date.now();
 // ─── F-02: One-time ticket store for WebSocket auth ────────
 const tickets = new Map<string, { expires: number }>();
 
+// #30: Ticket GC — clean expired tickets every 30s
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, t] of tickets) {
+    if (t.expires < now) tickets.delete(id);
+  }
+}, 30000);
+
 // ─── Security: Redact secrets from replay events ────────────
 function redactSecrets(text: string): string {
   return text
@@ -141,6 +149,16 @@ function redactSecrets(text: string): string {
 // ─── Bridge server ──────────────────────────────────────────
 const acpEventLog: string[] = [];
 const connections = new Map<string, WebSocket>();
+
+// #10: Session TTL enforcement — periodically close expired connections
+setInterval(() => {
+  if (Date.now() - sessionCreatedAt > SESSION_TTL) {
+    for (const [id, ws] of connections) {
+      ws.close(1000, 'Session expired');
+      connections.delete(id);
+    }
+  }
+}, 60000);
 
 const server = http.createServer((req, res) => {
   // F-18: Session expiry check for API routes
@@ -224,11 +242,24 @@ const server = http.createServer((req, res) => {
 
   // Static files
   const uiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../remote-ui');
-  const decodedUrl = decodeURIComponent(req.url || '/');
+  // #18: Guard against malformed URI encoding
+  let decodedUrl: string;
+  try {
+    decodedUrl = decodeURIComponent(req.url || '/');
+  } catch {
+    res.writeHead(400); res.end(); return;
+  }
   if (decodedUrl.includes('..')) { res.writeHead(400); res.end(); return; }
   let filePath = path.resolve(uiDir, decodedUrl === '/' ? 'index.html' : decodedUrl.replace(/^\//, ''));
   if (!filePath.startsWith(uiDir)) { res.writeHead(403); res.end(); return; }
-  if (!fs.existsSync(filePath)) filePath = path.resolve(uiDir, 'index.html');
+  // #2: EISDIR guard — check if path is a directory before createReadStream
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      filePath = path.join(filePath, 'index.html');
+      if (!fs.existsSync(filePath)) { res.writeHead(404); res.end(); return; }
+    }
+  } catch { res.writeHead(404); res.end(); return; }
   const ext = path.extname(filePath);
   const mimes: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
   const securityHeaders: Record<string, string> = {
@@ -236,9 +267,14 @@ const server = http.createServer((req, res) => {
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
     'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:* wss://*.devtunnels.ms;",
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
   };
   res.writeHead(200, securityHeaders);
-  fs.createReadStream(filePath).pipe(res);
+  // #8: Handle createReadStream errors
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', () => { if (!res.headersSent) { res.writeHead(500); } res.end(); });
+  stream.pipe(res);
 });
 
 const wss = new WebSocketServer({
@@ -259,9 +295,16 @@ const wss = new WebSocketServer({
     // Backward compat: accept token
     if (url.searchParams.get('token') !== sessionToken) return false;
     // Validate origin if present
+    // #28: Proper origin validation using URL parsing
     const origin = info.req.headers.origin;
-    if (origin && !origin.includes('devtunnels.ms') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-      return false;
+    if (origin) {
+      try {
+        const originUrl = new URL(origin);
+        const host = originUrl.hostname;
+        if (host !== 'localhost' && host !== '127.0.0.1' && !host.endsWith('.devtunnels.ms')) {
+          return false;
+        }
+      } catch { return false; }
     }
     return true;
   },
@@ -269,9 +312,10 @@ const wss = new WebSocketServer({
 
 // ─── Security: Audit log for remote PTY input ──────────────
 const auditDir = path.join(os.homedir(), '.cli-tunnel', 'audit');
-fs.mkdirSync(auditDir, { recursive: true });
+fs.mkdirSync(auditDir, { recursive: true, mode: 0o700 });
 const auditLogPath = path.join(auditDir, `audit-${new Date().toISOString().slice(0, 10)}.jsonl`);
 const auditLog = fs.createWriteStream(auditLogPath, { flags: 'a' });
+auditLog.on('error', (err) => { console.error('Audit log error:', err.message); });
 
 wss.on('connection', (ws, req) => {
   // F-10: Connection cap
@@ -296,19 +340,20 @@ wss.on('connection', (ws, req) => {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'pty_input' && ptyProcess) {
-        auditLog.write(JSON.stringify({ ts: new Date().toISOString(), src: remoteAddress, type: 'pty_input', data: msg.data }) + '\n');
+        auditLog.write(JSON.stringify({ ts: new Date().toISOString(), src: remoteAddress, type: 'pty_input', data: redactSecrets(JSON.stringify(msg.data)) }) + '\n');
         ptyProcess.write(msg.data);
       }
-      if (msg.type === 'pty_resize' && ptyProcess) {
-        const cols = Math.max(1, Math.min(500, msg.cols));
-        const rows = Math.max(1, Math.min(200, msg.rows));
-        ptyProcess.resize(cols, rows);
+      // #7: NaN guard on pty_resize
+      if (msg.type === 'pty_resize') {
+        const cols = Number(msg.cols);
+        const rows = Number(msg.rows);
+        if (Number.isFinite(cols) && Number.isFinite(rows) && ptyProcess) {
+          ptyProcess.resize(Math.max(1, Math.min(500, cols)), Math.max(1, Math.min(200, rows)));
+        }
       }
     } catch {
-      auditLog.write(JSON.stringify({ ts: new Date().toISOString(), src: remoteAddress, type: 'raw_input', data: raw }) + '\n');
-      if (raw.length <= 100 && ptyProcess) {
-        ptyProcess.write(raw + '\r');
-      }
+      // #3: Log but do NOT write to PTY — only structured pty_input messages allowed
+      auditLog.write(JSON.stringify({ ts: new Date().toISOString(), type: 'rejected', reason: 'non-json', length: raw.length }) + '\n');
     }
   });
 
@@ -473,7 +518,7 @@ async function main() {
     'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
     'PROGRAMFILES', 'PROGRAMFILES(X86)', 'SYSTEMROOT', 'WINDIR', 'COMSPEC',
     'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
-    'NODE_PATH', 'NODE_ENV', 'NODE_OPTIONS',
+    'NODE_ENV',
     'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME',
     'JAVA_HOME', 'MAVEN_HOME', 'GRADLE_HOME',
     'PYTHONPATH', 'VIRTUAL_ENV', 'CONDA_DEFAULT_ENV',
