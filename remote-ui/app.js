@@ -431,6 +431,7 @@
     applyGridLayout(gridMode);
 
     // Handle window resize
+    window.removeEventListener('resize', fitGridPanels);
     window.addEventListener('resize', fitGridPanels);
     if ($('#btn-sessions')) { $('#btn-sessions').textContent = 'List'; }
   }

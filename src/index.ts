@@ -25,6 +25,7 @@ import http from 'node:http';
 import readline from 'node:readline';
 import { WebSocketServer, WebSocket } from 'ws';
 import os from 'node:os';
+import { redactSecrets } from './redact.js';
 
 function askUser(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -164,32 +165,6 @@ setInterval(() => {
 }, 30000);
 
 // ─── Security: Redact secrets from replay events ────────────
-function redactSecrets(text: string): string {
-  return text
-    // Generic patterns: key=value, key: value, key="value"
-    .replace(/(?:token|secret|key|password|credential|authorization|api_key|private_key|access_key|connection_string|db_pass|signing)[\s:="']+\S{8,}/gi, '[REDACTED]')
-    // OpenAI keys
-    .replace(/sk-[a-zA-Z0-9]{20,}/g, '[REDACTED]')
-    // GitHub tokens
-    .replace(/gh[ps]_[a-zA-Z0-9]{36,}/g, '[REDACTED]')
-    // AWS keys
-    .replace(/AKIA[A-Z0-9]{16}/g, '[REDACTED]')
-    // Azure connection strings
-    .replace(/DefaultEndpointsProtocol=[^;\s]{20,}/gi, '[REDACTED]')
-    .replace(/AccountKey=[^;\s]{20,}/gi, 'AccountKey=[REDACTED]')
-    // Database URLs
-    .replace(/(postgres|mongodb|mysql|redis):\/\/[^\s"']{10,}/gi, '[REDACTED]')
-    // Bearer tokens in headers
-    .replace(/Bearer\s+[a-zA-Z0-9._-]{20,}/gi, 'Bearer [REDACTED]')
-    // JWT tokens
-    .replace(/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g, '[REDACTED]')
-    // Slack tokens
-    .replace(/xox[bpras]-[a-zA-Z0-9-]{10,}/g, '[REDACTED]')
-    // npm tokens
-    .replace(/npm_[a-zA-Z0-9]{20,}/g, '[REDACTED]')
-    // PEM private keys
-    .replace(/-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/g, '[REDACTED]');
-}
 
 // ─── Bridge server ──────────────────────────────────────────
 const acpEventLog: string[] = [];
@@ -233,15 +208,18 @@ const server = http.createServer(async (req, res) => {
   // F-8: Rate limiting for HTTP endpoints
   if (req.url?.startsWith('/api/')) {
     const isTicket = req.url === '/api/auth/ticket';
-    if (isTicket && !checkRateLimit(clientIp, ticketRateLimits, 10)) {
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Too Many Requests' }));
-      return;
-    }
-    if (!checkRateLimit(clientIp, rateLimits, 30)) {
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Too Many Requests' }));
-      return;
+    if (isTicket) {
+      if (!checkRateLimit(clientIp, ticketRateLimits, 10)) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Too Many Requests' }));
+        return;
+      }
+    } else {
+      if (!checkRateLimit(clientIp, rateLimits, 30)) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Too Many Requests' }));
+        return;
+      }
     }
   }
   // F-18: Session expiry check for API routes
@@ -256,9 +234,10 @@ const server = http.createServer(async (req, res) => {
     const auth = req.headers.authorization?.replace('Bearer ', '');
     if (auth !== sessionToken) { res.writeHead(401); res.end(); return; }
     const ticket = crypto.randomUUID();
-    tickets.set(ticket, { expires: Date.now() + 60000 });
+    const expiresAt = Date.now() + 60000;
+    tickets.set(ticket, { expires: expiresAt });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ticket, expires: Date.now() + 60000 }));
+    res.end(JSON.stringify({ ticket, expires: expiresAt }));
     return;
   }
 
@@ -275,7 +254,9 @@ const server = http.createServer(async (req, res) => {
 
   // Hub ticket proxy — fetch ticket from local session on behalf of grid client
   if (hubMode && req.url?.startsWith('/api/proxy/ticket/') && req.method === 'POST') {
-    const targetPort = parseInt(req.url.replace('/api/proxy/ticket/', ''), 10);
+    const ticketPathMatch = req.url?.match(/^\/api\/proxy\/ticket\/(\d+)$/);
+    if (!ticketPathMatch) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid port' })); return; }
+    const targetPort = parseInt(ticketPathMatch[1], 10);
     if (!Number.isFinite(targetPort) || targetPort < 1 || targetPort > 65535) {
       res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid port' })); return;
     }
@@ -387,7 +368,7 @@ const server = http.createServer(async (req, res) => {
     'Content-Type': mimes[ext] || 'application/octet-stream',
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* wss://*.devtunnels.ms https://*.devtunnels.ms;",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://*.devtunnels.ms https://*.devtunnels.ms;",
     'Referrer-Policy': 'no-referrer',
     'Cache-Control': 'no-store',
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
@@ -759,24 +740,28 @@ async function main() {
   });
 
   // Detect CSPRNG crash (rare Node.js + PTY issue) and show helpful message
-  let ptyExitedEarly = false;
+  let earlyExitCode: number | null = null;
   const earlyExitCheck = new Promise<void>((resolve) => {
     ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
-      if (exitCode === 134 || exitCode === 3221226505) {
-        ptyExitedEarly = true;
-        resolve();
-      }
+      earlyExitCode = exitCode;
+      resolve();
     });
     setTimeout(resolve, 2000);
   });
 
   await earlyExitCheck;
-  if (ptyExitedEarly) {
-    const nodeVer = process.version;
-    console.log(`  ${YELLOW}⚠${RESET} The command crashed (CSPRNG assertion failure).`);
-    console.log(`  This is a known issue with Node.js ${nodeVer} + PTY on Windows.`);
-    console.log(`  ${BOLD}Fix:${RESET} Install Node.js 22 LTS: ${GREEN}nvm install 22${RESET} or ${GREEN}winget install OpenJS.NodeJS.LTS${RESET}\n`);
-    process.exit(1);
+  if (earlyExitCode !== null) {
+    if (earlyExitCode === 134 || earlyExitCode === 3221226505) {
+      const nodeVer = process.version;
+      console.log(`  ${YELLOW}⚠${RESET} The command crashed (CSPRNG assertion failure).`);
+      console.log(`  This is a known issue with Node.js ${nodeVer} + PTY on Windows.`);
+      console.log(`  ${BOLD}Fix:${RESET} Install Node.js 22 LTS: ${GREEN}nvm install 22${RESET} or ${GREEN}winget install OpenJS.NodeJS.LTS${RESET}\n`);
+      process.exit(1);
+    } else {
+      console.log(`\n${DIM}Process exited (code ${earlyExitCode}).${RESET}`);
+      server.close();
+      process.exit(earlyExitCode);
+    }
   }
 
   ptyProcess.onData((data: string) => {

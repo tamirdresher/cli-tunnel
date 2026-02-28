@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { redactSecrets } from './redact.js';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -110,23 +111,6 @@ async function closeWs(ws: WebSocket): Promise<void> {
   });
 }
 
-// ─── Redaction function (copied from src/index.ts — not exported) ───
-
-function redactSecrets(text: string): string {
-  return text
-    .replace(/(?:token|secret|key|password|credential|authorization|api_key|private_key|access_key|connection_string|db_pass|signing)[\s:="']+\S{8,}/gi, '[REDACTED]')
-    .replace(/sk-[a-zA-Z0-9]{20,}/g, '[REDACTED]')
-    .replace(/gh[ps]_[a-zA-Z0-9]{36,}/g, '[REDACTED]')
-    .replace(/AKIA[A-Z0-9]{16}/g, '[REDACTED]')
-    .replace(/DefaultEndpointsProtocol=[^;\s]{20,}/gi, '[REDACTED]')
-    .replace(/AccountKey=[^;\s]{20,}/gi, 'AccountKey=[REDACTED]')
-    .replace(/(postgres|mongodb|mysql|redis):\/\/[^\s"']{10,}/gi, '[REDACTED]')
-    .replace(/Bearer\s+[a-zA-Z0-9._-]{20,}/gi, 'Bearer [REDACTED]')
-    .replace(/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g, '[REDACTED]')
-    .replace(/xox[bpras]-[a-zA-Z0-9-]{10,}/g, '[REDACTED]')
-    .replace(/npm_[a-zA-Z0-9]{20,}/g, '[REDACTED]')
-    .replace(/-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/g, '[REDACTED]');
-}
 
 // ─── Shared server for HTTP / WS / Security tests ──────────
 
