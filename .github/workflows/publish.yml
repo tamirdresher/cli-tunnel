@@ -8,11 +8,16 @@ on:
       - 'remote-ui/**'
       - 'package.json'
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -44,6 +49,39 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.current }}"
+          # Generate release notes from commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            NOTES=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --no-merges)
+          else
+            NOTES=$(git log --pretty=format:"- %s" --no-merges -20)
+          fi
+
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "## cli-tunnel v${VERSION}
+
+          Published to npm: \`npx cli-tunnel@${VERSION}\`
+
+          ### Changes
+          ${NOTES}
+
+          ### Install
+          \`\`\`bash
+          npm install -g cli-tunnel@${VERSION}
+          # or
+          npx cli-tunnel copilot --yolo
+          \`\`\`"
 
       - name: Skip (version unchanged)
         if: steps.version.outputs.changed == 'false'
