@@ -172,6 +172,9 @@ header {
   background: var(--bg-tool);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
 }
 #key-bar {
   display: flex;
@@ -239,9 +242,178 @@ header {
 .session-card .status-dot.offline { background: var(--text-dim); }
 .session-card .info { flex: 1; min-width: 0; }
 .session-card .repo { color: var(--blue); font-weight: bold; font-size: 13px; }
+.session-card .session-name { color: var(--text-bright); font-weight: bold; font-size: 14px; }
 .session-card .branch { color: var(--text-dim); font-size: 11px; }
 .session-card .machine { color: var(--text-dim); font-size: 11px; }
 .session-card .arrow { color: var(--text-dim); }
+
+/* Grid View (multi-terminal with layout modes) */
+#grid-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Grid toolbar */
+.grid-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-tool);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.grid-toolbar button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.grid-toolbar button.active {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.grid-toolbar .spacer { flex: 1; }
+.grid-toolbar-presets { display: flex; gap: 4px; margin-left: 8px; }
+.grid-toolbar-presets.hidden { display: none; }
+
+/* Grid content area */
+#grid-content {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Thumbnail mode */
+#grid-content.mode-thumbnails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  align-content: flex-start;
+  overflow-y: auto;
+}
+.grid-panel.thumbnail {
+  width: 280px;
+  height: 200px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.grid-panel.thumbnail:hover {
+  border-color: var(--blue);
+}
+.grid-panel.thumbnail .grid-panel-terminal {
+  overflow: hidden;
+}
+
+/* Tmux mode */
+#grid-content.mode-tmux {
+  display: grid;
+  gap: 2px;
+  background: var(--border);
+}
+.grid-panel.active {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+
+/* Focus mode */
+#grid-content.mode-focus {
+  display: flex;
+  flex-direction: column;
+}
+.grid-panel.focus-main {
+  flex: 1;
+  min-height: 0;
+}
+.grid-panel.focus-main .grid-panel-header {
+  background: var(--blue);
+}
+.grid-panel.focus-main .grid-panel-name {
+  color: #fff;
+}
+.focus-strips {
+  display: flex;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.grid-panel.focus-strip {
+  height: 80px;
+  cursor: pointer;
+  border-top: 1px solid var(--border);
+  flex: 1;
+  min-width: 120px;
+}
+.grid-panel.focus-strip:hover {
+  background: var(--bg-tool);
+}
+
+/* Fullscreen mode */
+#grid-content.mode-fullscreen {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.grid-panel.fullscreen {
+  flex: 1;
+  min-height: 0;
+}
+.back-to-grid {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  background: var(--bg-tool);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 10;
+}
+.back-to-grid:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.grid-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+  min-height: 0;
+}
+.grid-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--bg-tool);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+.grid-panel-header:hover { background: var(--border); }
+.grid-panel-name { color: var(--blue); font-weight: bold; }
+.grid-panel-machine { color: var(--text-dim); flex: 1; }
+.grid-panel-status { font-size: 8px; color: var(--yellow); }
+.grid-panel-terminal {
+  flex: 1;
+  overflow: hidden;
+}
+.grid-panel-terminal .xterm {
+  height: 100%;
+  padding: 2px;
+}
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }

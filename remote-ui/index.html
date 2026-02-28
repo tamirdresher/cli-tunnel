@@ -32,16 +32,16 @@
 
     <footer id="input-area">
       <div id="key-bar">
-        <button onclick="sendKey('\x1b[A')">↑</button>
-        <button onclick="sendKey('\x1b[B')">↓</button>
-        <button onclick="sendKey('\x1b[C')">→</button>
-        <button onclick="sendKey('\x1b[D')">←</button>
-        <button onclick="sendKey('\t')">Tab</button>
-        <button onclick="sendKey('\r')">Enter</button>
-        <button onclick="sendKey('\x1b')">Esc</button>
-        <button onclick="sendKey('\x03')">Ctrl+C</button>
-        <button onclick="sendKey(' ')">Space</button>
-        <button onclick="sendKey('\x7f')">⌫</button>
+        <button data-key="\x1b[A">↑</button>
+        <button data-key="\x1b[B">↓</button>
+        <button data-key="\x1b[C">→</button>
+        <button data-key="\x1b[D">←</button>
+        <button data-key="\t">Tab</button>
+        <button data-key="\r">Enter</button>
+        <button data-key="\x1b">Esc</button>
+        <button data-key="\x03">Ctrl+C</button>
+        <button data-key=" ">Space</button>
+        <button data-key="\x7f">⌫</button>
       </div>
       <form id="input-form">
         <span class="prompt">&gt;</span>
