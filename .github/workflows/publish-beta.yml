@@ -1,0 +1,53 @@
+name: Publish beta to npm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'remote-ui/**'
+      - 'package.json'
+
+jobs:
+  publish-beta:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - run: npx tsc
+
+      - name: Run tests with coverage
+        run: npx vitest run --coverage
+
+      - name: Check if version changed
+        id: version
+        run: |
+          PUBLISHED=$(npm view cli-tunnel@beta version 2>/dev/null || echo "0.0.0")
+          CURRENT=$(node -p "require('./package.json').version")
+          echo "published=$PUBLISHED" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "$PUBLISHED" = "$CURRENT" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish beta
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish --tag beta --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip (version unchanged)
+        if: steps.version.outputs.changed == 'false'
+        run: echo "Version ${{ steps.version.outputs.current }} already published as beta."
