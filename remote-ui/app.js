@@ -113,8 +113,7 @@
       }, 150);
     });
 
-    // Send initial size
-    setTimeout(sendResize, 500);
+    // Initial size is sent on WS open (see ws.onopen)
 
     // Keyboard input → send to bridge → PTY
     xterm.onData((data) => {
@@ -850,7 +849,8 @@
       connected = true;
       reconnectAttempt = 0;
       setStatus('online', 'Connected');
-      // PTY mode: server sends pty data immediately, no ACP handshake needed
+      // Reset resize tracking so initial pty_resize is always sent on new connection
+      if (xterm) { lastCols = 0; lastRows = 0; sendResize(); }
     };
     ws.onclose = () => {
       connected = false; acpReady = false; sessionId = null;
