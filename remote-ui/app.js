@@ -93,15 +93,24 @@
     fitAddon.fit();
 
     // Send terminal size to PTY so copilot renders correctly
+    var lastCols = 0, lastRows = 0;
+    var resizeTimer = null;
     function sendResize() {
       if (ws && ws.readyState === WebSocket.OPEN && xterm) {
-        ws.send(JSON.stringify({ type: 'pty_resize', cols: xterm.cols, rows: xterm.rows }));
+        if (xterm.cols !== lastCols || xterm.rows !== lastRows) {
+          lastCols = xterm.cols;
+          lastRows = xterm.rows;
+          ws.send(JSON.stringify({ type: 'pty_resize', cols: xterm.cols, rows: xterm.rows }));
+        }
       }
     }
 
-    // Handle resize
+    // Handle resize — debounced to avoid rapid PTY resizes (mobile keyboard, URL bar, etc.)
     window.addEventListener('resize', () => {
-      if (fitAddon) { fitAddon.fit(); sendResize(); }
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (fitAddon) { fitAddon.fit(); sendResize(); }
+      }, 150);
     });
 
     // Send initial size
@@ -568,18 +577,25 @@
     }, 100);
   }
 
+  var gridResizeTimer = null;
   function fitGridPanels() {
-    gridTerminals.forEach(function(gt) {
-      if (!document.contains(gt.panel)) return;
-      if (gt.fitAddon) {
-        try {
-          gt.fitAddon.fit();
-          if (gt.ws && gt.ws.readyState === WebSocket.OPEN && gt.xterm) {
-            gt.ws.send(JSON.stringify({ type: 'pty_resize', cols: gt.xterm.cols, rows: gt.xterm.rows }));
-          }
-        } catch(e) {}
-      }
-    });
+    if (gridResizeTimer) clearTimeout(gridResizeTimer);
+    gridResizeTimer = setTimeout(function() {
+      gridTerminals.forEach(function(gt) {
+        if (!document.contains(gt.panel)) return;
+        if (gt.fitAddon) {
+          try {
+            var prevCols = gt.xterm ? gt.xterm.cols : 0;
+            var prevRows = gt.xterm ? gt.xterm.rows : 0;
+            gt.fitAddon.fit();
+            if (gt.ws && gt.ws.readyState === WebSocket.OPEN && gt.xterm &&
+                (gt.xterm.cols !== prevCols || gt.xterm.rows !== prevRows)) {
+              gt.ws.send(JSON.stringify({ type: 'pty_resize', cols: gt.xterm.cols, rows: gt.xterm.rows }));
+            }
+          } catch(e) {}
+        }
+      });
+    }, 150);
   }
 
   function destroyGrid() {
@@ -833,7 +849,8 @@
     ws.onopen = () => {
       connected = true;
       reconnectAttempt = 0;
-      setTimeout(() => initializeACP(1), 1000);
+      setStatus('online', 'Connected');
+      // PTY mode: server sends pty data immediately, no ACP handshake needed
     };
     ws.onclose = () => {
       connected = false; acpReady = false; sessionId = null;
