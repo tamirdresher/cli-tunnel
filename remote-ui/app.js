@@ -36,6 +36,9 @@
   let replaying = false;
   let toolCalls = {};
 
+  // Save token before it's stripped from URL bar
+  var savedToken = new URLSearchParams(window.location.search).get('token') || '';
+
   const $ = (sel) => document.querySelector(sel);
   const terminal = $('#terminal');
   const inputEl = $('#input');
@@ -47,7 +50,7 @@
   const termContainer = $('#terminal-container');
   let currentView = 'terminal'; // 'dashboard', 'terminal', or 'grid'
   let cachedSessions = [];
-  let gridTerminals = []; // { xterm, fitAddon, ws, session, panel }
+  let gridTerminals = []; // { xterm, fitAddon, session, panel }
   var gridMode = 'thumbnails';
   var focusedIndex = 0;
   var tmuxPreset = 'equal';
@@ -63,9 +66,18 @@
     if (currentView === 'grid' && gridMode === 'fullscreen' && gridTerminals[focusedIndex]) {
       canvas = gridTerminals[focusedIndex].panel.querySelector('canvas');
     } else {
-      canvas = termContainer.querySelector('canvas');
+      var tc = document.getElementById('terminal-container');
+      if (tc) canvas = tc.querySelector('canvas');
     }
-    if (!canvas) { console.warn('No terminal canvas found'); return false; }
+    if (!canvas) {
+      // Fallback: try to find any canvas in the xterm container
+      var xtermEl = document.querySelector('.xterm');
+      if (xtermEl) canvas = xtermEl.querySelector('canvas');
+    }
+    if (!canvas || !canvas.captureStream) {
+      if (statusText) { var prev = statusText.textContent; statusText.textContent = 'Recording not supported'; setTimeout(function() { statusText.textContent = prev; }, 3000); }
+      return false;
+    }
     try {
       var stream = canvas.captureStream(30); // 30 fps
       var mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9'
@@ -132,6 +144,40 @@
         if (statusText) { statusText.textContent = 'Recording not available'; }
         setTimeout(function() { if (statusText && statusText.textContent === 'Recording not available') statusText.textContent = prevText; }, 3000);
       }
+    }
+  }
+
+  function takeScreenshot() {
+    var canvas = null;
+    if (currentView === 'grid' && gridMode === 'fullscreen' && gridTerminals[focusedIndex]) {
+      canvas = gridTerminals[focusedIndex].panel.querySelector('canvas');
+    } else {
+      var tc = document.getElementById('terminal-container');
+      if (tc) canvas = tc.querySelector('canvas');
+    }
+    if (!canvas) {
+      // Fallback: try to find any canvas in the xterm container
+      var xtermEl = document.querySelector('.xterm');
+      if (xtermEl) canvas = xtermEl.querySelector('canvas');
+    }
+    if (!canvas) {
+      if (statusText) { var prev = statusText.textContent; statusText.textContent = 'No terminal to capture'; setTimeout(function() { statusText.textContent = prev; }, 2000); }
+      return;
+    }
+    try {
+      var dataUrl = canvas.toDataURL('image/png');
+      var a = document.createElement('a');
+      var timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      a.href = dataUrl;
+      a.download = 'cli-tunnel-' + timestamp + '.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Flash effect
+      canvas.style.opacity = '0.5';
+      setTimeout(function() { canvas.style.opacity = '1'; }, 150);
+    } catch (e) {
+      if (statusText) { var prev2 = statusText.textContent; statusText.textContent = 'Screenshot failed'; setTimeout(function() { statusText.textContent = prev2; }, 2000); }
     }
   }
 
@@ -211,65 +257,104 @@
 
   async function loadSessions() {
     try {
-      const tokenParam = new URLSearchParams(window.location.search).get('token');
-      const headers = tokenParam ? { 'Authorization': 'Bearer ' + tokenParam } : {};
-      const resp = await fetch('/api/sessions', { headers });
-      const data = await resp.json();
-      renderDashboard(data.sessions || []);
+      var headers = savedToken ? { 'Authorization': 'Bearer ' + savedToken } : {};
+      var resp = await fetch('/api/sessions', { headers: headers });
+      if (!resp.ok) throw new Error('Status ' + resp.status);
+      var data = await resp.json();
+      if (!isHubMode) {
+        renderNonHubSessions(data.sessions || []);
+      } else {
+        renderDashboard(data.sessions || []);
+      }
     } catch (err) {
-      dashboard.innerHTML = '<div style="padding:12px;color:var(--red)">' + escapeHtml('Failed to load sessions: ' + err.message) + '</div>';
+      dashboard.innerHTML = '<div style="padding:20px 12px;color:var(--text-dim);text-align:center">' +
+        escapeHtml('Sessions unavailable. Use Hub mode (cli-tunnel with no command) to see all sessions.') + '</div>';
+    }
+  }
+
+  function renderNonHubSessions(sessions) {
+    var currentName = document.title || 'this session';
+    var html = '<div class="non-hub-view">' +
+      '<div class="non-hub-current">You\'re connected to: <strong>' + escapeHtml(currentName) + '</strong></div>' +
+      '<div class="non-hub-back"><a href="#" data-action="back-to-terminal">← Back to terminal</a></div>' +
+      '<div class="non-hub-hint">Start a Hub to see all sessions: <code>cli-tunnel</code> (no command)</div>' +
+      '</div>';
+    dashboard.innerHTML = html;
+    var backLink = dashboard.querySelector('[data-action="back-to-terminal"]');
+    if (backLink) {
+      backLink.addEventListener('click', function(e) { e.preventDefault(); toggleView(); });
     }
   }
 
   function renderDashboard(sessions) {
-    const filtered = showOffline ? sessions : sessions.filter(s => s.online);
-    const offlineCount = sessions.filter(s => !s.online).length;
-    const onlineCount = sessions.filter(s => s.online).length;
-    const connectable = filtered.filter(s => s.online && s.token);
+    var filtered = showOffline ? sessions : sessions.filter(function(s) { return s.online; });
+    var offlineCount = sessions.filter(function(s) { return !s.online; }).length;
+    var connectable = filtered.filter(function(s) { return s.online && s.hasToken; });
+    var remoteCount = filtered.length - connectable.length;
 
-    let html = `<div style="padding:8px 4px;display:flex;align-items:center;gap:8px">
-      <span style="color:var(--text-dim);font-size:12px">${onlineCount} online${offlineCount > 0 ? ', ' + offlineCount + ' offline' : ''}</span>
-      <span style="flex:1"></span>
-      ${connectable.length > 1 ? '<button data-action="grid-view" style="background:none;border:1px solid var(--blue);color:var(--blue);font-family:var(--font);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer">⊞ Grid</button>' : ''}
-      <button data-action="toggle-offline" style="background:none;border:1px solid var(--border);color:var(--text-dim);font-family:var(--font);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer">${showOffline ? 'Hide offline' : 'Show offline'}</button>
-      ${offlineCount > 0 ? '<button data-action="clean-offline" style="background:none;border:1px solid var(--red);color:var(--red);font-family:var(--font);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer">Clean offline</button>' : ''}
-      <button data-action="refresh" style="background:none;border:1px solid var(--border);color:var(--text-dim);font-family:var(--font);font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer">↻</button>
-    </div>`;
+    // Hub header
+    var html = '<div class="hub-header">' +
+      '<h2 class="hub-title">cli-tunnel Hub</h2>' +
+      '<div class="hub-stats">' + connectable.length + ' connectable · ' + remoteCount + ' remote' +
+        (offlineCount > 0 ? ' · ' + offlineCount + ' offline' : '') +
+        ' <span class="hub-refresh-indicator" title="Auto-refreshes every 10s">↻</span>' +
+      '</div>' +
+      '</div>';
+
+    // Toolbar actions
+    html += '<div class="hub-toolbar">' +
+      '<button data-action="toggle-offline" class="hub-toolbar-btn">' + (showOffline ? 'Hide offline' : 'Show offline') + '</button>' +
+      (offlineCount > 0 ? '<button data-action="clean-offline" class="hub-toolbar-btn hub-toolbar-btn-danger">Clean offline</button>' : '') +
+      '<button data-action="refresh" class="hub-toolbar-btn">↻ Refresh</button>' +
+      '</div>';
+
+    // Grid banner when 2+ connectable
+    if (connectable.length >= 2) {
+      html += '<div class="grid-banner" data-action="grid-view">' +
+        '<span>Monitor all sessions live</span>' +
+        '<span class="grid-banner-btn">⊞ Open Grid View</span>' +
+        '</div>';
+    }
 
     if (filtered.length === 0) {
       html += '<div style="padding:20px 12px;color:var(--text-dim);text-align:center">' +
         (sessions.length === 0 ? 'No cli-tunnel sessions found.' : 'No online sessions. Tap "Show offline" to see stale ones.') +
         '</div>';
     } else {
-      html += filtered.map(s => {
-        const hasAccess = s.hasToken;
-        return `
-        <div class="session-card" ${s.online && hasAccess ? 'data-session-port="' + s.port + '" data-session-base-url="' + escapeHtml(s.url) + '"' : ''}>
-          <span class="status-dot ${s.online ? 'online' : 'offline'}"></span>
-          <div class="info">
-            <div class="session-name">${escapeHtml(s.name)}</div>
-            <div class="repo">📦 ${escapeHtml(s.repo)}</div>
-            <div class="branch">🌿 ${escapeHtml(s.branch)}</div>
-            <div class="machine">💻 ${escapeHtml(s.machine)}${!hasAccess && s.online ? ' 🔒' : ''}</div>
-          </div>
-          ${s.online && hasAccess ? '<span class="arrow">→</span>' :
-            !s.online ? '<button data-delete-id="' + escapeHtml(s.id) + '" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px" title="Remove">✕</button>'
-            : '<span style="color:var(--text-dim);font-size:11px">remote</span>'}
-        </div>`;
-      }).join('');
+      filtered.forEach(function(s) {
+        var canConnect = s.online && s.hasToken;
+        html += '<div class="session-card-v2' + (canConnect ? ' connectable' : '') + '"' +
+          (canConnect ? ' data-session-port="' + s.port + '" data-session-base-url="' + escapeHtml(s.url) + '"' : '') + '>' +
+          '<div class="card-header">' +
+            '<span class="card-status ' + (s.online ? 'online' : 'offline') + '"></span>' +
+            '<span class="card-name">' + escapeHtml(s.name) + '</span>' +
+            (canConnect ? '<span class="card-connect">Connect →</span>' :
+             s.online ? '<span class="card-remote">Remote 🔒</span>' :
+             '<span class="card-offline">Offline</span>') +
+          '</div>' +
+          '<div class="card-details">' +
+            '<span>💻 ' + escapeHtml(s.machine) + '</span>' +
+            '<span>📦 ' + escapeHtml(s.repo) + '</span>' +
+            '<span>🌿 ' + escapeHtml(s.branch) + '</span>' +
+          '</div>' +
+          (!s.online ? '<button data-delete-id="' + escapeHtml(s.id) + '" class="card-delete" title="Remove">✕</button>' : '') +
+          '</div>';
+      });
     }
+
     dashboard.innerHTML = html;
     cachedSessions = sessions;
+
     // Event delegation
-    dashboard.querySelectorAll('.session-card[data-session-port]').forEach(function(card) {
-      card.addEventListener('click', function() {
+    dashboard.querySelectorAll('.session-card-v2[data-session-port]').forEach(function(card) {
+      card.addEventListener('click', function(e) {
+        if (e.target.closest('[data-delete-id]')) return;
         var port = card.dataset.sessionPort;
         var baseUrl = card.dataset.sessionBaseUrl;
-        var tokenParam = new URLSearchParams(window.location.search).get('token');
         var proxyUrl = '/api/proxy/ticket/' + port;
         fetch(proxyUrl, {
           method: 'POST',
-          headers: tokenParam ? { 'Authorization': 'Bearer ' + tokenParam } : {}
+          headers: savedToken ? { 'Authorization': 'Bearer ' + savedToken } : {}
         }).then(function(r) { return r.json(); }).then(function(data) {
           if (data.ticket) {
             window.location.href = baseUrl + '?ticket=' + encodeURIComponent(data.ticket);
@@ -300,8 +385,7 @@
   };
 
   window.cleanOffline = async () => {
-    const tokenParam = new URLSearchParams(window.location.search).get('token');
-    const headers = tokenParam ? { 'Authorization': 'Bearer ' + tokenParam } : {};
+    const headers = savedToken ? { 'Authorization': 'Bearer ' + savedToken } : {};
     const resp = await fetch('/api/sessions', { headers });
     const data = await resp.json();
     const offline = (data.sessions || []).filter(s => !s.online);
@@ -312,15 +396,14 @@
   };
 
   window.deleteSession = async (id) => {
-    const tokenParam = new URLSearchParams(window.location.search).get('token');
-    const headers = tokenParam ? { 'Authorization': 'Bearer ' + tokenParam } : {};
+    const headers = savedToken ? { 'Authorization': 'Bearer ' + savedToken } : {};
     await fetch('/api/sessions/' + id, { method: 'DELETE', headers });
     loadSessions();
   };
 
   // ─── Grid View (multi-terminal with layout modes) ───────────
   function showGridView(sessions) {
-    var connectable = sessions.filter(function(s) { return s.online && s.token; });
+    var connectable = sessions.filter(function(s) { return s.online && s.hasToken; });
     if (connectable.length === 0) return;
 
     // Clean up previous grid
@@ -448,54 +531,19 @@
       panelXterm.open(termDiv);
 
       // Store entry before async connect so index is stable
-      var entry = { xterm: panelXterm, fitAddon: panelFit, ws: null, session: s, panel: panel };
+      var entry = { xterm: panelXterm, fitAddon: panelFit, session: s, panel: panel };
       gridTerminals.push(entry);
 
-      // Connect WebSocket to this session
-      (function connectPanel() {
-        // Use hub's proxy endpoint to get a ticket for the session
-        var tokenParam = new URLSearchParams(window.location.search).get('token');
-        var proxyUrl = '/api/proxy/ticket/' + s.port;
-        var wsBase = s.isLocal ? 'ws://127.0.0.1:' + s.port : s.url.replace('https://', 'wss://');
+      // Connect via hub relay — send grid_connect message
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'grid_connect', port: s.port }));
+      }
 
-        fetch(proxyUrl, {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + tokenParam }
-        }).then(function(resp) {
-          if (!resp.ok) throw new Error('Auth failed');
-          return resp.json();
-        }).then(function(data) {
-          var panelWs = new WebSocket(wsBase + '?ticket=' + encodeURIComponent(data.ticket));
-          entry.ws = panelWs;
-
-          panelWs.onopen = function() {
-            if (statusDot) { statusDot.style.color = 'var(--green)'; statusDot.title = 'Connected'; }
-            panelWs.send(JSON.stringify({ type: 'pty_resize', cols: panelXterm.cols, rows: panelXterm.rows }));
-          };
-          panelWs.onclose = function() {
-            if (statusDot) { statusDot.style.color = 'var(--red)'; statusDot.title = 'Disconnected'; }
-          };
-          panelWs.onerror = function() {
-            if (statusDot) { statusDot.style.color = 'var(--red)'; }
-          };
-          panelWs.onmessage = function(e) {
-            try {
-              var msg = JSON.parse(e.data);
-              if (msg.type === 'pty') {
-                panelXterm.write(msg.data);
-              }
-            } catch (err) {}
-          };
-
-          panelXterm.onData(function(data) {
-            if (panelWs && panelWs.readyState === WebSocket.OPEN) {
-              panelWs.send(JSON.stringify({ type: 'pty_input', data: data }));
-            }
-          });
-        }).catch(function() {
-          if (statusDot) { statusDot.style.color = 'var(--red)'; statusDot.title = 'Auth failed'; }
-        });
-      })();
+      panelXterm.onData(function(data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'grid_input', port: s.port, data: data }));
+        }
+      });
     });
 
     // ── Event delegation for panel clicks ──
@@ -650,9 +698,6 @@
         if (gt.fitAddon) {
           try {
             gt.fitAddon.fit();
-            if (gt.ws && gt.ws.readyState === WebSocket.OPEN && gt.xterm) {
-              gt.ws.send(JSON.stringify({ type: 'pty_resize', cols: gt.xterm.cols, rows: gt.xterm.rows }));
-            }
           } catch(e) {}
         }
       });
@@ -670,10 +715,6 @@
             var prevCols = gt.xterm ? gt.xterm.cols : 0;
             var prevRows = gt.xterm ? gt.xterm.rows : 0;
             gt.fitAddon.fit();
-            if (gt.ws && gt.ws.readyState === WebSocket.OPEN && gt.xterm &&
-                (gt.xterm.cols !== prevCols || gt.xterm.rows !== prevRows)) {
-              gt.ws.send(JSON.stringify({ type: 'pty_resize', cols: gt.xterm.cols, rows: gt.xterm.rows }));
-            }
           } catch(e) {}
         }
       });
@@ -683,7 +724,6 @@
   function destroyGrid() {
     if (isRecording) { stopRecording(); var btn = document.getElementById('btn-record'); if (btn) { btn.classList.remove('recording'); btn.textContent = '⏺'; btn.title = 'Record terminal'; } }
     gridTerminals.forEach(function(gt) {
-      if (gt.ws) { try { gt.ws.close(); } catch(e) {} }
       if (gt.xterm) { try { gt.xterm.dispose(); } catch(e) {} }
     });
     gridTerminals = [];
@@ -893,7 +933,7 @@
 
   async function connect() {
     if (isHubMode) {
-      // Hub mode — hide terminal UI, show sessions only
+      // Hub mode — show sessions dashboard
       setStatus('online', 'Hub');
       terminal.classList.add('hidden');
       termContainer.classList.add('hidden');
@@ -901,32 +941,65 @@
       $('#btn-sessions').classList.add('hidden');
       dashboard.classList.remove('hidden');
       loadSessions();
-      // Auto-refresh every 10s
       setInterval(loadSessions, 10000);
+
+      // Hub also needs a WS connection for grid relay
+      if (savedToken) {
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        try {
+          var resp = await fetch('/api/auth/ticket', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + savedToken }
+          });
+          if (resp.ok) {
+            var data = await resp.json();
+            ws = new WebSocket(proto + '//' + location.host + '?ticket=' + encodeURIComponent(data.ticket));
+            ws.onopen = function() { connected = true; console.log('[hub] WS connected for grid relay'); };
+            ws.onclose = function() { connected = false; ws = null; };
+            ws.onerror = function() { ws = null; };
+            ws.onmessage = function(e) {
+              try { handleMessage(JSON.parse(e.data)); } catch(err) {}
+            };
+          }
+        } catch(err) { console.log('[hub] WS connect failed:', err); }
+      }
       return;
     }
 
-    const tokenParam = new URLSearchParams(window.location.search).get('token');
-    if (!tokenParam) { setStatus('offline', 'No credentials'); return; }
+    const ticketParam = new URLSearchParams(window.location.search).get('ticket');
+
+    if (!savedToken && !ticketParam) { setStatus('offline', 'No credentials'); return; }
+
+    // Strip token from URL bar to prevent leaking via Referer/history
+    if (savedToken) {
+      var cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('token');
+      history.replaceState(null, '', cleanUrl.toString());
+    }
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-    // F-02: Ticket-based auth (required)
-    try {
-      const resp = await fetch('/api/auth/ticket', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + tokenParam }
-      });
-      if (resp.ok) {
-        const { ticket } = await resp.json();
-        ws = new WebSocket(`${proto}//${location.host}?ticket=${encodeURIComponent(ticket)}`);
-      } else {
+    // If we have a ticket (from hub Connect button), use it directly
+    if (ticketParam) {
+      ws = new WebSocket(`${proto}//${location.host}?ticket=${encodeURIComponent(ticketParam)}`);
+    } else {
+      // Exchange token for ticket
+      try {
+        const resp = await fetch('/api/auth/ticket', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + savedToken }
+        });
+        if (resp.ok) {
+          const { ticket } = await resp.json();
+          ws = new WebSocket(`${proto}//${location.host}?ticket=${encodeURIComponent(ticket)}`);
+        } else {
+          setStatus('offline', 'Auth failed');
+          return;
+        }
+      } catch {
         setStatus('offline', 'Auth failed');
         return;
       }
-    } catch {
-      setStatus('offline', 'Auth failed');
-      return;
     }
     setStatus('connecting', 'Connecting...');
 
@@ -940,7 +1013,11 @@
     ws.onclose = () => {
       if (isRecording) { stopRecording(); var btn = document.getElementById('btn-record'); if (btn) { btn.classList.remove('recording'); btn.textContent = '⏺'; btn.title = 'Record terminal'; } }
       connected = false; acpReady = false; sessionId = null;
-      setStatus('offline', 'Disconnected');
+      if (reconnectAttempt >= 10) {
+        setStatus('offline', 'Connection lost');
+        return;
+      }
+      setStatus('offline', 'Reconnecting...');
       const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempt)) + Math.random() * 1000;
       reconnectAttempt++;
       setTimeout(connect, delay);
@@ -954,6 +1031,14 @@
     };
   }
 
+  // Reconnect immediately when phone comes back from background
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && !connected && !isHubMode) {
+      reconnectAttempt = 0;
+      connect();
+    }
+  });
+
   // ─── Message Handler ─────────────────────────────────────
   function handleMessage(msg) {
     // Replay events from bridge recording
@@ -965,6 +1050,31 @@
     if (msg.type === '_replay_done') {
       replaying = false;
       scrollToBottom();
+      return;
+    }
+
+    // Grid relay messages from hub
+    if (msg.type === 'grid_pty') {
+      var gt = gridTerminals.find(function(g) { return g.session && g.session.port === msg.port; });
+      if (gt && gt.xterm) { gt.xterm.write(msg.data); }
+      return;
+    }
+
+    if (msg.type === 'grid_connected') {
+      var gt = gridTerminals.find(function(g) { return g.session && g.session.port === msg.port; });
+      if (gt) {
+        var dot = gt.panel.querySelector('.grid-panel-status');
+        if (dot) { dot.style.color = 'var(--green)'; dot.title = 'Connected'; }
+      }
+      return;
+    }
+
+    if (msg.type === 'grid_disconnected') {
+      var gt = gridTerminals.find(function(g) { return g.session && g.session.port === msg.port; });
+      if (gt) {
+        var dot = gt.panel.querySelector('.grid-panel-status');
+        if (dot) { dot.style.color = 'var(--red)'; dot.title = 'Disconnected'; }
+      }
       return;
     }
 
@@ -1097,12 +1207,16 @@
         toggleRecording();
         return;
       }
+      if (btn && btn.tagName === 'BUTTON' && btn.dataset.action === 'take-screenshot') {
+        takeScreenshot();
+        return;
+      }
       if (btn && btn.tagName === 'BUTTON' && btn.dataset.key) {
         var key = keyMap[btn.dataset.key] || btn.dataset.key;
         if (currentView === 'grid' && gridMode === 'fullscreen' && gridTerminals[focusedIndex]) {
           var gt = gridTerminals[focusedIndex];
-          if (gt.ws && gt.ws.readyState === WebSocket.OPEN) {
-            gt.ws.send(JSON.stringify({ type: 'pty_input', data: key }));
+          if (ws && ws.readyState === WebSocket.OPEN && gt.session) {
+            ws.send(JSON.stringify({ type: 'grid_input', port: gt.session.port, data: key }));
           }
           if (gt.xterm) gt.xterm.focus();
         } else {

@@ -69,7 +69,7 @@ cli-tunnel --port 4000 copilot
 cli-tunnel --local copilot --yolo
 ```
 
-**cli-tunnel's own flags** (`--local`, `--port`, `--name`, `--replay`) must come **before** the command.
+**cli-tunnel's own flags** (`--local`, `--port`, `--name`, `--no-wait`) must come **before** the command.
 
 ## Hub Mode — Sessions Dashboard
 
@@ -109,7 +109,7 @@ Single terminal with key bar for mobile input. "← Grid" button to go back.
 
 ![Fullscreen view](docs/images/grid-fullscreen.png)
 
-All modes share the same WebSocket connections — switching is instant, no reconnection needed.
+All modes share the same WebSocket connection — the hub relays PTY data from each session, so switching layouts is instant with no reconnection.
 
 ## What You See on Your Phone
 
@@ -163,12 +163,13 @@ cli-tunnel uses a layered security model:
 
 ## Terminal Size Behavior
 
-cli-tunnel uses a single PTY shared between your local terminal and all remote viewers. When a phone connects, the PTY resizes to match the remote device's screen dimensions — the CLI app renders correctly on the device you're actively using.
+cli-tunnel uses a single PTY shared between your local terminal and all remote viewers. The PTY stays at your local terminal's dimensions — remote devices view the terminal through their own xterm.js viewport.
 
 **Tips for the best experience:**
 - Rotate your phone to landscape for a wider terminal
 - Use the key bar (↑↓←→ Tab Enter Esc Ctrl+C) at the bottom for navigation
-- If multiple devices connect, the last one to resize wins
+- To select text on the local terminal, hold **Shift** while clicking/dragging (raw mode captures all input otherwise)
+- Use `--no-wait` flag to skip the press-any-key prompt (useful for scripting)
 
 ## FAQ
 
@@ -176,7 +177,7 @@ cli-tunnel uses a single PTY shared between your local terminal and all remote v
 Yes, up to 5 devices simultaneously (2 per IP). All viewers see the same terminal output in real time. Input from any device goes to the same CLI session.
 
 **What happens if my phone disconnects?**
-The CLI session keeps running on your machine. When you reconnect, you'll see live output from that point forward. Use `--replay` to enable history replay so reconnecting devices catch up on what they missed.
+The CLI session keeps running on your machine. When you reconnect, a rolling replay buffer (up to 256 KB) sends the current terminal state so you see the prompt and recent output immediately — no manual refresh needed.
 
 **Does cli-tunnel work with any CLI app?**
 Yes. Any command that runs in a terminal works — copilot, vim, htop, python, ssh, k9s, node, and more. cli-tunnel doesn't interpret the command's output; it streams raw terminal bytes.
@@ -194,10 +195,10 @@ Yes. Use `--local` to skip tunnel creation. The terminal is available at `http:/
 Run `cli-tunnel` with no command to start hub mode — a sessions dashboard that shows all active cli-tunnel sessions. Tap any session to connect, or use Grid view to monitor all sessions simultaneously.
 
 **How does recording work?**
-The record button captures the xterm.js canvas at 30fps using the browser's MediaRecorder API. The recording is a `.webm` video file that downloads to your device when you stop. It records exactly what you see on screen — perfect for demos and presentations. Max duration is 10 minutes.
+Recording via canvas capture is not currently supported due to xterm.js WebGL renderer limitations. This feature may return in a future release.
 
 **How does the Grid view connect to sessions?**
-The hub reads session tokens from `~/.cli-tunnel/sessions/` (files with owner-only permissions). It proxies ticket requests to each session's local port — no tokens are exposed to the browser client.
+The hub acts as a relay — your phone has a single WebSocket to the hub, and the hub opens local connections to each session on your behalf. Session tokens are read from `~/.cli-tunnel/sessions/` (owner-only permissions) and never exposed to the browser. This means grid panels work even from a phone over devtunnel without needing individual tunnel connections to each session.
 
 ## How It's Built
 
