@@ -977,7 +977,7 @@
       history.replaceState(null, '', cleanUrl.toString());
     }
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
     // If we have a ticket (from hub Connect button), use it directly
     if (ticketParam) {
@@ -985,7 +985,7 @@
     } else {
       // Exchange token for ticket
       try {
-        const resp = await fetch('/api/auth/ticket', {
+        var resp = await fetch('/api/auth/ticket', {
           method: 'POST',
           headers: { 'Authorization': 'Bearer ' + savedToken }
         });
