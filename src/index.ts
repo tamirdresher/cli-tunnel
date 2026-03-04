@@ -429,19 +429,17 @@ const wss = new WebSocketServer({
 
     // F-18: Session expiry
     if (Date.now() - sessionCreatedAt > SESSION_TTL) return false;
-    // F-3: Validate origin BEFORE ticket acceptance
-    // F-06: Require Origin header — reject non-browser clients without Origin
+    // F-3: Validate origin when present (devtunnel proxies may strip it)
     const origin = info.req.headers.origin;
-    if (!origin) {
-      return false;
+    if (origin) {
+      try {
+        const originUrl = new URL(origin);
+        const host = originUrl.hostname;
+        if (host !== 'localhost' && host !== '127.0.0.1' && !host.endsWith('.devtunnels.ms')) {
+          return false;
+        }
+      } catch { return false; }
     }
-    try {
-      const originUrl = new URL(origin);
-      const host = originUrl.hostname;
-      if (host !== 'localhost' && host !== '127.0.0.1' && !host.endsWith('.devtunnels.ms')) {
-        return false;
-      }
-    } catch { return false; }
     const url = new URL(info.req.url!, `http://${info.req.headers.host}`);
     // F-02: Accept one-time ticket (only auth method for WS)
     const ticket = url.searchParams.get('ticket');
